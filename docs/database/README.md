@@ -2,12 +2,12 @@
 
 > Produkčně připravené schéma pro plánování itinerářů a výletů s integrací autonomní dopravy (robotaxi).
 
-Dokumentace je rozdělena podle domén. Diagramový zdroj: [`docs/robotaxi-trips-database.dbml`](../robotaxi-trips-database.dbml).
+Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-database.dbml`](robotaxi-trips-database.dbml).
 
 ## Obsah
 
 - [Users & trips](users-and-trips.md) — `users`, `trips`, členové, recenze výletů; status/visibility; Recenze
-- [Places](places.md) — kategorie, místa, recenze míst; geografické dotazy
+- [Places](places.md) — kategorie, místa, přijímané platby (`accepted_payments`), recenze míst; geografické dotazy
 - [Segments](segments.md) — segmenty, galerie, `transit_details`; sémantika, cena, věk
 - [Weather & climate](weather-and-climate.md) — oblasti, týdenní počasí, klima; teplota
 - [Packing](packing.md) — oblečení, pravidla, cache balení
@@ -35,7 +35,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`docs/robotaxi-trips
 | **Auditní pole** | Každá **entitní** tabulka má `created_at TIMESTAMPTZ NOT NULL DEFAULT now()` a `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`; `updated_at` udržuje automatický trigger. Cache tabulky (`segment_packing_items`, `trip_packing_items`, `trip_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories`) a junction tabulky `clothing_rule_*` / `robotaxi_advisory_rule_*` auditní pole nemají. |
 | **Autorský obsah segmentu** | `segments.title`, `segments.description` a galerie `segment_images` jsou autorský obsah v jazyce autora výletu — oddělený od strukturálních dat (čas, místa, cena) a neagreguje se na `trips`. |
 | **Hard delete výletů** | Výlet se maže fyzicky (`DELETE FROM trips`); CASCADE smaže `trip_members`, `trip_reviews` (+ `trip_review_media`), `trip_packing_items`, `trip_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories`, `segments`, `segment_images`, `segment_packing_items` a `transit_details`. Skrytí z katalogu řeší `status` + `visibility`. Hard delete místa (`DELETE FROM places`) CASCADE smaže `place_reviews` (+ `place_review_media`). |
-| **Lokalizace na FE** | DB ukládá stabilní slugy a enum hodnoty; přeložené labely (oblečení, cestovní požadavky, počasí, klima / suitability měsíců, náročnost, kategorie, robotaxi provideři, upozornění) řeší frontend podle `users.locale`. UGC texty recenzí (`trip_reviews.body`, `place_reviews.body`, captiony médií) zůstávají v jazyce autora — bez systémového překladu v DB. |
+| **Lokalizace na FE** | DB ukládá stabilní slugy a enum hodnoty; přeložené labely (oblečení, cestovní požadavky, počasí, klima / suitability měsíců, náročnost, kategorie, přijímané platby místa, robotaxi provideři, upozornění) řeší frontend podle `users.locale`. UGC texty recenzí (`trip_reviews.body`, `place_reviews.body`, captiony médií) zůstávají v jazyce autora — bez systémového překladu v DB. |
 
 ---
 
@@ -60,6 +60,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`docs/robotaxi-trips
 | `travel_requirement_source` | `trip_geography`, `manual` — proč byla položka doporučena (cache cestovních požadavků na úrovni výletu) |
 | `weather_region_type` | `postal_code`, `locality`, `subdivision`, `custom` — úroveň geo oblasti pro agregaci počasí; `subdivision` = stát/kraj/provincie dle ISO 3166-2 |
 | `review_media_kind` | `image`, `video` — typ média v galerii uživatelské recenze |
+| `place_accepted_payments` | `card`, `cash`, `card_and_cash` — jak se na místě platí; na sloupci `places.accepted_payments` je `NULL` = neznámé / nezadáno |
 
 ---
 
@@ -93,6 +94,7 @@ place_categories ──< places ── (start_place_id / end_place_id on segment
                          ├── weather_region_id → weather_regions ──< weather_records
                          │                                    └──< weather_climate_months
                          ├── country_code (ISO 3166-1 alpha-2)
+                         ├── accepted_payments (card / cash / card_and_cash; NULL = neznámé)
                          ├── rating (externí Maps)
                          └── review_rating_avg / review_rating_count (cache z place_reviews)
 

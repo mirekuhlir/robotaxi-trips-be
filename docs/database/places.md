@@ -47,6 +47,7 @@ Pravidla zápisu a agregace uživatelských recenzí (trip i place) — viz [Rec
 | `address` | TEXT, nullable | Volný text adresy; prázdný řetězec normalizuj na `NULL` |
 | `phone_calling_code` | VARCHAR, nullable | Mezinárodní telefonní předvolba bez `+` (např. `420`, `1`, `43`) — **ne** ISO `country_code`; jen číslice, typicky 1–3 znaky |
 | `telephone` | VARCHAR, nullable | Národní / účastnické číslo bez předvolby (např. `222111222`); FE skládá zobrazení `+{phone_calling_code} {telephone}` |
+| `accepted_payments` | place_accepted_payments, nullable | Jak se na místě platí: `card` / `cash` / `card_and_cash`; `NULL` = neznámé / nezadáno — UI nic nezobrazí. Bez stavu „nebere nic“ (v1); bezplatné / předplacené místo nech `NULL` nebo doplň později. Žádná agregace na `trips`, žádný katalog / junction. |
 | `rating` | NUMERIC(2, 1), nullable | **Externí** hodnocení ve stylu Google Maps (`1.0`–`5.0`) z importu / adminu — **ne** agregace z `place_reviews`; `NULL` = neznámé |
 | `review_rating_avg` | NUMERIC(2, 1), nullable | Průměrné uživatelské hodnocení místa (`1.0`–`5.0`); cache z `place_reviews.score`; ne ručně editovatelná; `NULL` = žádné recenze (`review_rating_count = 0`) |
 | `review_rating_count` | INTEGER, NOT NULL | Počet uživatelských recenzí; cache z `place_reviews`; ne ručně editovatelná; výchozí `0` |
@@ -61,6 +62,17 @@ Pravidla zápisu a agregace uživatelských recenzí (trip i place) — viz [Rec
 | `locality` | VARCHAR, nullable | Město / obec z geocodingu |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
+
+**Přijímané platby (`accepted_payments`) — sémantika pro FE:**
+
+| Hodnota | Význam | UI |
+|---|---|---|
+| `NULL` | Neznámé / nezadáno | Žádný platební blok |
+| `card` | Jen platba kartou | Chip „Platba kartou“ |
+| `cash` | Jen hotovost | Chip „Hotovost“ |
+| `card_and_cash` | Karta i hotovost | Oba chipy, nebo jeden „Karta i hotovost“ (volba FE; DB drží jednu hodnotu) |
+
+Labely z FE i18n podle enum hodnoty + `users.locale`.
 
 ### `place_reviews`
 

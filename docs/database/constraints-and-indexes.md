@@ -84,6 +84,8 @@ CHECK (
 CHECK (phone_calling_code IS NULL OR phone_calling_code ~ '^[0-9]{1,3}$')
 ```
 
+Neznámá / nezadaná platba = `accepted_payments IS NULL`. Žádný CHECK ani index navíc — hodnoty pokrývá typ `place_accepted_payments`.
+
 **`trip_reviews` / `place_reviews`:**
 
 ```sql
