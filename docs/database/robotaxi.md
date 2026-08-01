@@ -212,8 +212,8 @@ ORDER BY sra.priority DESC, rai.sort_order;
 #### Výpočet na segment
 
 1. Přeskočit segmenty, které nejsou `segment_kind = transit` s `transport_mode = robotaxi`.
-2. Načíst `weather_records` pro segment podle [Lookup počasí podle typu segmentu](weather-and-climate.md#lookup-počasí-podle-typu-segmentu) (kroky 1–3).
-3. Načíst aktivní `robotaxi_advisory_rules` (včetně junction tabulek) a vyhodnotit podmínky proti každému načtenému počasí. **Weather-based pravidlo matchuje segment, pokud splní podmínky proti alespoň jednomu načtenému `(weather_region_id, week_start)` záznamu** (OR logika — např. `dense_fog_disruption` při mlze v libovolném dotčeném regionu nebo týdnu).
+2. Načíst `weather_records` pro segment podle [Lookup počasí podle typu segmentu](weather-and-climate.md#lookup-počasí-podle-typu-segmentu) (kroky 1–3; včetně [geo-fallbacku](weather-and-climate.md#hierarchie-oblastí-a-geo-fallback) na rodičovskou oblast). Klima se pro advisories nepoužívá.
+3. Načíst aktivní `robotaxi_advisory_rules` (včetně junction tabulek) a vyhodnotit podmínky proti každému načtenému počasí. **Weather-based pravidlo matchuje segment, pokud splní podmínky proti alespoň jednomu načtenému `(resolved_weather_region_id, week_start)` záznamu** (OR logika — např. `dense_fog_disruption` při mlze v libovolném dotčeném regionu nebo týdnu; region může být rodič přes geo-fallback).
 4. Sloučit matching `advisory_item_id` a priority (union; u stejné položky nejvyšší `priority`).
 5. Seřadit dle `robotaxi_advisory_rules.priority` a `robotaxi_advisory_items.sort_order`.
 6. `DELETE FROM segment_robotaxi_advisories WHERE segment_id = :id` → `INSERT` matching položek včetně vypočtené nejvyšší `priority`.
@@ -229,7 +229,7 @@ Labely pro UI mapuje FE z i18n souborů podle `slug`, `severity` a `users.locale
 Přepočty probíhají v aplikační vrstvě (ne PostgreSQL triggerem).
 
 - změna segmentů výletu → přepočet spolu s ostatními agregacemi na `trips`
-- změna `weather_records` pro oblasti dotčené výletem → přepočet cache robotaxi upozornění (lze počítat v jednom průchodu s cache balení a `temp_*`)
+- změna `weather_records` pro oblasti dotčené výletem **nebo jejich rodiče v geo-řetězci** → přepočet cache robotaxi upozornění (lze počítat v jednom průchodu s cache balení a `temp_*`)
 - změna aktivních `robotaxi_advisory_rules` nebo junction tabulek → najít dotčené výlety a přepočítat
 - chybějící `places.weather_region_id` u robotaxi segmentů → weather-based pravidla se přeskočí; cache může být prázdná
 

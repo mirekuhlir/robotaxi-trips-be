@@ -375,7 +375,7 @@ Table weather_regions {
     (country_code, subdivision_code) [unique, name: 'uq_weather_regions_subdivision', note: 'SQL: partial UNIQUE WHERE region_type = subdivision; DBML unique je pouze diagramová aproximace — jako globální UNIQUE by kolidoval s locality regiony stejné subdivize (např. subdivision US/CA vs. locality US/CA/San Francisco a US/CA/Los Angeles)']
   }
 
-  Note: 'region_type = custom záměrně bez unique constraintu — zakládá se ručně, unikátnost hlídá admin proces. CHECK country_code ~ ^[A-Z]{2}$.'
+  Note: 'region_type = custom záměrně bez unique constraintu — zakládá se ručně, unikátnost hlídá admin proces. CHECK country_code ~ ^[A-Z]{2}$. Hierarchie postal_code → locality → subdivision bez parent FK — runtime geo-fallback při lookupu weather_records (a klimatu pro trips.temp_*), viz docs/database/weather-and-climate.md#hierarchie-oblastí-a-geo-fallback. custom bez rodiče ve v1.'
 }
 
 Table places {

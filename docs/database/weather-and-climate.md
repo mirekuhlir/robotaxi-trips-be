@@ -30,8 +30,11 @@ Oblasti typu `custom` **záměrně nemají unique constraint** (na rozdíl od pa
 
 | name | region_type | country_code | subdivision_code | locality | postal_code | timezone |
 |---|---|---|---|---|---|---|
+| California | subdivision | US | CA | | | America/Los_Angeles |
+| Los Angeles, CA | locality | US | CA | Los Angeles | | America/Los_Angeles |
 | San Francisco, CA 94102 | postal_code | US | CA | San Francisco | 94102 | America/Los_Angeles |
 
+Při zakládání `locality` (nebo `postal_code`) zajisti odpovídající rodičovskou `subdivision` pro stejné `(country_code, subdivision_code)` — bez ní [geo-fallback](#hierarchie-oblastí-a-geo-fallback) nemá kam spadnout. Subdivision se plní vlastním syncem (centroid `center_*`), ne agregací měst.
 
 ### `weather_records`
 
@@ -112,7 +115,7 @@ Skóre „ideální měsíc“, labely a agregace na výlet se **neukládají** 
 
 ### Teplota výletu
 
-**Zdroj pravdy:** `weather_records` (region × lokální ISO týden dle `weather_regions.timezone`) — ne segment, ne trip. Vzduchová teplota (`temp_*`) i pocitová (`feels_like_*`, vlhkost + vítr) — viz [Pocitová teplota](#pocitová-teplota). Chybí-li pro dotčený týden záznam, teplotní cache se dopočítá z klimatického normálu — viz [Fallback na klima](#fallback-na-klima).
+**Zdroj pravdy:** `weather_records` (region × lokální ISO týden dle `weather_regions.timezone`) — ne segment, ne trip. Vzduchová teplota (`temp_*`) i pocitová (`feels_like_*`, vlhkost + vítr) — viz [Pocitová teplota](#pocitová-teplota). Chybí-li záznam na oblasti místa, lookup nejdřív zkusí rodičovskou oblast ([geo-fallback](#hierarchie-oblastí-a-geo-fallback)); teprve pak se teplotní cache může dopočítat z klimatického normálu — viz [Fallback na klima](#fallback-na-klima).
 
 **Trips (cache pro katalog):** Sloupce `temp_min_c` / `temp_max_c` (vzduchová) a `feels_like_min_c` / `feels_like_max_c` (pocitová) jsou agregovaná cache odvozená z počasí přes segmenty a místa — viz [Agregace na úrovni `trips`](implementation-notes.md#agregace-na-úrovni-trips). Sloupec `trips.temperature_source` říká, zda hodnoty pocházejí z týdenních dat, nebo z klimatu. Autor výletu je nevyplňuje ručně. Konzistentní s principem „počasí odděleně od balení“ — jde o odvozeninu pro vyhledávání, ne duplikaci celého `weather_records`.
 
@@ -120,21 +123,23 @@ Skóre „ideální měsíc“, labely a agregace na výlet se **neukládají** 
 
 #### Fallback na klima
 
-`weather_records` pokrývají archiv a prognózu na blízké týdny. Výlet naplánovaný na příští sezónu by bez fallbacku měl teplotní cache `NULL` a z filtrovaného katalogu by úplně vypadl. Proto se pro **teplotní cache na `trips`** používá dvouúrovňový zdroj:
+`weather_records` pokrývají archiv a prognózu na blízké týdny. Výlet naplánovaný na příští sezónu by bez fallbacku měl teplotní cache `NULL` a z filtrovaného katalogu by úplně vypadl. Proto se pro **teplotní cache na `trips`** po vyčerpání týdenních záznamů (včetně rodičů) používá klimatický normál:
 
-1. Pro každou kombinaci `(weather_region_id, week_start)` z [lookupu](#lookup-počasí-podle-typu-segmentu) zkusit `weather_records`.
-2. Chybí-li záznam, načíst `weather_climate_months` pro daný region a **kalendářní měsíc, do kterého padá střed týdne** (čtvrtek daného ISO týdne v `weather_regions.timezone`).
-3. Chybí-li i klima, kombinaci přeskočit jako dosud.
+1. Pro každou kombinaci `(place.weather_region_id, week_start)` z [lookupu](#lookup-počasí-podle-typu-segmentu) projít [geo-řetězec](#hierarchie-oblastí-a-geo-fallback) a zkusit `weather_records` na oblasti místa a případných rodičích — první hit vyhrává.
+2. Chybí-li týdenní záznam v celém řetězci, projít **stejný geo-řetězec** a načíst `weather_climate_months` pro danou oblast / rodiče a **kalendářní měsíc, do kterého padá střed týdne** (čtvrtek daného ISO týdne v timezone **původní** oblasti místa). První hit vyhrává.
+3. Chybí-li i klima v celém řetězci, kombinaci přeskočit.
 
 Hodnota `trips.temperature_source`:
 
 | Situace | `temperature_source` |
 |---|---|
-| Všechny přispívající kombinace z `weather_records` | `weather_records` |
-| Alespoň jedna kombinace dopočítaná z klimatu | `climate` |
+| Všechny přispívající kombinace z `weather_records` (včetně rodičovské oblasti) | `weather_records` |
+| Alespoň jedna kombinace dopočítaná z klimatu (včetně klimatu rodiče) | `climate` |
 | Žádná vyřešitelná kombinace (všechny teplotní sloupce `NULL`) | `NULL` |
 
-**Fallback platí jen pro teplotní cache na `trips`.** Balení (`clothing_rules`) a robotaxi upozornění (`robotaxi_advisory_rules`) se dál vyhodnocují **výhradně proti `weather_records`** — měsíční normál nenese `visibility_avg_m`, rychlost větru ani denní variabilitu, takže by generoval nepřesná doporučení pro konkrétní termín. Přepočet teplotní cache tedy může doplnit klima i pro výlet, jehož balení zůstane prázdné.
+Bez nové enum hodnoty ve v1: geo-fallback na rodičovský týdenní záznam se počítá jako `weather_records`, ne jako samostatný zdroj. Volitelně později „coarse region“ pro UI.
+
+**Klimatický fallback platí jen pro teplotní cache na `trips`.** Balení (`clothing_rules`) a robotaxi upozornění (`robotaxi_advisory_rules`) se dál vyhodnocují **výhradně proti `weather_records`** (včetně rodičovských přes geo-fallback) — měsíční normál nenese `visibility_avg_m`, rychlost větru ani denní variabilitu, takže by generoval nepřesná doporučení pro konkrétní termín. Přepočet teplotní cache tedy může doplnit klima i pro výlet, jehož balení zůstane prázdné.
 
 FE může u `temperature_source = 'climate'` zobrazit teplotu jako orientační („dlouhodobý průměr pro dané období“) místo prognózy.
 
@@ -170,7 +175,7 @@ Počasí se neváže přímo na jednotlivé místo, ale na **oblast** (`weather_
 | Koncept | Popis |
 |---|---|
 | **Oblast** | Administrativní nebo custom zóna identifikovaná ISO kódy (`country_code`, `subdivision_*`, `locality`, `postal_code`) nebo `region_type = custom`. Více míst může sdílet jednu oblast. |
-| **Typ oblasti** | `postal_code` (PSČ) → `locality` (město) → `subdivision` (stát/kraj) → `custom` (ručně kurátorovaná). V1 primárně ukládá `weather_records` na úrovni `locality`; `postal_code` jen kde klima v rámci města kolísá. |
+| **Typ oblasti** | `postal_code` (PSČ) → `locality` (město) → `subdivision` (stát/kraj) → `custom` (ručně kurátorovaná). V1 primárně ukládá `weather_records` na úrovni `locality`; `postal_code` jen kde klima v rámci města kolísá. Hierarchie bez `parent_id` — viz [geo-fallback](#hierarchie-oblastí-a-geo-fallback). |
 | **Časová zóna** | `weather_regions.timezone` je IANA identifikátor a zdroj pravdy pro lokální ISO týden (`Europe/Prague`, `America/Los_Angeles`). |
 | **Týdenní záznam** | Jeden řádek v `weather_records` = jeden lokální ISO týden v dané oblasti. |
 | **Měsíční klima** | Jeden řádek v `weather_climate_months` = typický kalendářní měsíc (1–12) v dané oblasti — klimatický normál, ne konkrétní rok. |
@@ -194,12 +199,42 @@ Segmenty v rámci stejného lokálního ISO týdne dle `weather_regions.timezone
 
 **Backlog v2:** tabulka `weather_records_daily` (region × den).
 
+#### Hierarchie oblastí a geo-fallback
+
+Oblasti jsou **ploché řádky** bez sloupce `parent_weather_region_id`. Hierarchie `postal_code` → `locality` → `subdivision` se odvodí z ISO polí a `region_type` (aplikační logika). `places.weather_region_id` zůstává jeden FK na nejjemnější dostupnou oblast; fallback se děje jen při **čtení** dat, ne při párování místa.
+
+**Odvodění rodiče:**
+
+| Aktuální `region_type` | Najít rodiče |
+|---|---|
+| `postal_code` | `locality` se stejným `(country_code, subdivision_code, locality)` |
+| `locality` | `subdivision` se stejným `(country_code, subdivision_code)` |
+| `subdivision` | konec řetězce |
+| `custom` | konec řetězce (bez rodiče ve v1) |
+
+Pokud rodičovský řádek v `weather_regions` neexistuje, krok přeskočit. `custom` oblasti nemají geo-fallback ve v1 (není jednoznačný rodič z ISO kódů).
+
+**Timezone:** výpočet lokálních ISO týdnů vždy z timezone **původní** oblasti místa (`places.weather_region_id`), ne z rodiče — jinak by se při rozdílné TZ mohly posunout hranice týdne.
+
+**Subdivision jako fallback:** státní / krajská oblast je hrubší (ingest na `center_*` = centroid, ne agregát měst). Je záměrně záložní zdroj, když chybí data na jemnější úrovni — ne primární volba pro místo ve městě.
+
+**Pořadí zdrojů** pro jednu kombinaci `(place.weather_region_id, week_start)`:
+
+1. `weather_records` na oblasti místa
+2. `weather_records` na rodičích v řetězci (první hit)
+3. Jen pro teplotní cache na `trips`: `weather_climate_months` ve stejném geo-řetězci (viz [Fallback na klima](#fallback-na-klima))
+4. Jinak kombinaci přeskočit
+
+Geo-fallback na rodičovské `weather_records` platí pro **všechny** konzumenty lookupu (teplota, balení, robotaxi, itinerář). Klimatický fallback zůstává jen pro teplotu.
+
+**Deduplikace** při agregaci teploty: klíč je `(resolved_weather_region_id, week_start)` — region, ze kterého skutečně přišel záznam (ne nutně `places.weather_region_id`). LA i Santa Monica, které obě spadnou na Kalifornii pro stejný týden, se tak započítají jednou.
+
 #### Lookup počasí podle typu segmentu
 
 Kanonický algoritmus pro teplotu, balení i zobrazení v itineráři:
 
-1. Pro každý segment a vyhodnocovaný region převést interval `[start_time, end_time)` do `weather_regions.timezone` dané oblasti a určit **všechny lokální ISO týdny** (`week_start`), které interval protíná — každé pondělí dotčeného týdne. U polootevřeného intervalu se `end_time` **nepočítá** — segment končící v pondělí 00:00 lokálního času neprotíná nový ISO týden.
-2. Pro každou kombinaci `(weather_region_id, week_start)` načíst `weather_records` podle tabulky:
+1. Pro každý segment a vyhodnocovaný region převést interval `[start_time, end_time)` do `weather_regions.timezone` **původní** oblasti místa (`places.weather_region_id`) a určit **všechny lokální ISO týdny** (`week_start`), které interval protíná — každé pondělí dotčeného týdne. U polootevřeného intervalu se `end_time` **nepočítá** — segment končící v pondělí 00:00 lokálního času neprotíná nový ISO týden.
+2. Pro každou kombinaci `(place.weather_region_id, week_start)` sestavit kandidáty podle tabulky (start = oblast místa):
 
 | `segment_kind` | Lookup regionů |
 |---|---|
@@ -207,7 +242,7 @@ Kanonický algoritmus pro teplotu, balení i zobrazení v itineráři:
 | `transit` | `start_place_id.weather_region_id`; pokud `end_place_id IS NOT NULL`, i `end_place_id.weather_region_id` — každá kombinace region × protínající týden se vyhodnotí zvlášť (pro oblečení i agregaci teploty) |
 | `activity` | `start_place_id.weather_region_id`; pokud `end_place_id IS NOT NULL`, i `end_place_id.weather_region_id` — každá kombinace region × protínající týden se vyhodnotí zvlášť (pro oblečení i agregaci teploty) |
 
-3. Chybí `weather_region_id` → danou kombinaci přeskočit. Chybí `weather_records` pro daný týden → pro weather-based pravidla (balení, robotaxi upozornění) kombinaci přeskočit; pro **agregaci teploty na `trips`** se nejdřív zkusí klimatický normál (viz [Fallback na klima](#fallback-na-klima)) a teprve pak se kombinace přeskočí.
+3. Chybí `weather_region_id` → danou kombinaci přeskočit. Jinak projít [geo-řetězec](#hierarchie-oblastí-a-geo-fallback) a načíst první dostupný `weather_records` pro `(candidate_region_id, week_start)`. Hit na rodiči je platný týdenní záznam (balení, robotaxi i teplota). Chybí-li týdenní záznam v celém řetězci → pro weather-based pravidla (balení, robotaxi upozornění) kombinaci přeskočit; pro **agregaci teploty na `trips`** se nejdřív zkusí klimatický normál ve stejném geo-řetězci (viz [Fallback na klima](#fallback-na-klima)) a teprve pak se kombinace přeskočí. Vyřešený region (`resolved_weather_region_id`) použít pro deduplikaci teploty.
 4. Z každého načteného záznamu spočítat efektivní teploty pro agregaci na `trips` i pro `clothing_rules`:
    - **Vzduchová:** `temp_min_c` / `temp_max_c`; pokud chybí (`NULL`), fallback na `temp_avg_c` (NOT NULL) pro daný směr.
    - **Pocitová:** `feels_like_min_c` / `feels_like_max_c`; pokud chybí, fallback na `feels_like_avg_c`; pokud chybí i ta, fallback na **efektivní vzduchovou** stejného směru (min → efektivní `temp_min`, max → efektivní `temp_max`, avg → `temp_avg_c`). Pravidlo nikdy nevyhodnocuje teplotní podmínku proti `NULL`.
@@ -245,6 +280,8 @@ Pocitová teplota vyjadřuje, jak teplota působí na člověka s ohledem na **v
 **Mimo scope v1:** vlastní korekce vlezlé zimy (*damp cold*) nad běžným *apparent temperature*; denní granularita pocitové (`weather_records_daily`).
 
 #### Přiřazení místa k oblasti (hybrid)
+
+Auto-párování volí **nejjemnější** dostupnou oblast a uloží ji do `places.weather_region_id`. Runtime [geo-fallback](#hierarchie-oblastí-a-geo-fallback) je oddělená vrstva — při lookupu počasí, ne při přiřazení místa.
 
 1. Exact match: `places.country_code` + `places.postal_code` → `weather_regions` s `region_type = 'postal_code'`.
 2. Město: `country_code` + `subdivision_code` + `locality` → `region_type = 'locality'`.
@@ -307,7 +344,7 @@ Data `weather_records` lze plnit z externího API (Open-Meteo, Visual Crossing a
 
 Účel: na detailu výletu (UI blok „Kdy jet“) ukázat přehled typického počasí a systémové vhodnosti měsíců. Konkrétní termín výletu a balení dál řeší týdenní `weather_records`.
 
-Druhé použití: klima je **fallback pro teplotní cache** na `trips`, když pro dotčené týdny neexistuje týdenní záznam — viz [Fallback na klima](#fallback-na-klima). Skóre ani `suitability` se tím neperzistují, přenáší se jen teplotní metriky.
+Druhé použití: klima je **fallback pro teplotní cache** na `trips`, když pro dotčené týdny neexistuje týdenní záznam ani na oblasti místa, ani na rodičích v [geo-řetězci](#hierarchie-oblastí-a-geo-fallback) — viz [Fallback na klima](#fallback-na-klima). Skóre ani `suitability` se tím neperzistují, přenáší se jen teplotní metriky.
 
 ##### Plnění dat
 

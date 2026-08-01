@@ -9,7 +9,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 - [Users & trips](users-and-trips.md) — `users`, `trips`, členové, recenze výletů; status/visibility; Recenze
 - [Places](places.md) — kategorie, místa, přijímané platby (`accepted_payments`), recenze míst; geografické dotazy
 - [Segments](segments.md) — segmenty, galerie, `transit_details`; sémantika, cena, věk
-- [Weather & climate](weather-and-climate.md) — oblasti, týdenní počasí, klima; teplota
+- [Weather & climate](weather-and-climate.md) — oblasti, týdenní počasí, klima; teplota; geo-fallback hierarchie
 - [Packing](packing.md) — oblečení, pravidla, cache balení
 - [Travel requirements](travel-requirements.md) — cestovní formality
 - [Robotaxi](robotaxi.md) — provideři, vozidla, oblasti, advisories
@@ -26,6 +26,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 | **Explicitní typ segmentu** | `segment_kind` (`accommodation` / `activity` / `transit`) je primární zdroj pravdy; `end_place_id`, `transit_details` a kategorie místa musí být s ním konzistentní (validace v aplikaci). |
 | **Počasí odděleně od balení** | Týdenní `weather_records` per region; doporučení oblečení přes relační `clothing_rules` (+ junction tabulky) a normalizovanou cache `segment_packing_items` / `trip_packing_items` (+ `*_sources`) — bez duplikace počasí na segmentu. Cestovní formality (pas, vízum, …) jsou **oddělená doména** — cache `trip_travel_requirements`, ne součást weather packingu. |
 | **Klima měsíců odděleně od týdenního počasí** | Měsíční klimatické normály v `weather_climate_months` (typický měsíc v oblasti); týdenní prognóza/historie v `weather_records`. Skóre a label „ideální měsíc“ jsou odvozenina v aplikaci (read-time na detailu výletu) — bez cache na `trips` a bez duplikace klimatu na segmentu. Klima navíc slouží jako **fallback** pro teplotní cache katalogu, když pro dotčené týdny neexistuje týdenní záznam (`trips.temperature_source` říká, který zdroj se použil). |
+| **Geo-fallback oblastí počasí** | Hierarchie `postal_code` → `locality` → `subdivision` bez `parent_id` — odvozená z ISO polí. `places.weather_region_id` ukládá nejjemnější oblast; při chybějícím `weather_records` lookup za běhu zkusí rodiče (město → stát). Platí pro teplotu, balení i robotaxi; klimatický fallback zůstává jen pro teplotní cache. Viz [Hierarchie oblastí a geo-fallback](weather-and-climate.md#hierarchie-oblastí-a-geo-fallback). |
 | **Cestovní požadavky odděleně od balení** | Dokumenty a formality jsou trip-level cache odvozená z geografie míst (`places.country_code`), ne z počasí. UI zobrazuje dva bloky: „Co si sbalit“ (oblečení) a „Dokumenty a formality“ (cestovní požadavky). |
 | **Robotaxi doména odděleně** | Provideři (`robotaxi_providers`), modely vozidel, servisní oblasti a weather advisories jsou samostatná doména navázaná na `transit_details`. Cache `segment_robotaxi_advisories` / `trip_robotaxi_advisories` je oddělená od balení i cestovních požadavků. |
 | **DB constrainty + aplikační validace** | Základní invarianty (čas segmentu, ceny, rozsahy a konzistence počasí, věk), FK, partial unique indexy a nepřekrývání segmentů vynucuje PostgreSQL. Workflow pravidla a doménové cross-table validace (`segment_kind` ↔ `transit_details`, role, cache přepočty) zůstávají v aplikaci. |
@@ -58,8 +59,8 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 | `clothing_category` | `outerwear`, `layering`, `footwear`, `accessories`, `protection` |
 | `packing_source` | `weather`, `segment` — proč byla položka doporučena (cache balení na úrovni výletu) |
 | `travel_requirement_source` | `trip_geography`, `manual` — proč byla položka doporučena (cache cestovních požadavků na úrovni výletu) |
-| `temperature_source` | `weather_records`, `climate` — odkud pochází teplotní cache na `trips`; `climate` = alespoň jeden dotčený týden se dopočítal z `weather_climate_months` |
-| `weather_region_type` | `postal_code`, `locality`, `subdivision`, `custom` — úroveň geo oblasti pro agregaci počasí; `subdivision` = stát/kraj/provincie dle ISO 3166-2 |
+| `temperature_source` | `weather_records`, `climate` — odkud pochází teplotní cache na `trips`; `weather_records` zahrnuje i rodičovskou oblast přes geo-fallback; `climate` = alespoň jeden dotčený týden se dopočítal z `weather_climate_months` |
+| `weather_region_type` | `postal_code`, `locality`, `subdivision`, `custom` — úroveň geo oblasti pro agregaci počasí; `subdivision` = stát/kraj/provincie dle ISO 3166-2; runtime geo-fallback: postal → locality → subdivision |
 | `review_media_kind` | `image`, `video` — typ média v galerii uživatelské recenze |
 | `place_accepted_payments` | `card`, `cash`, `card_and_cash` — jak se na místě platí; na sloupci `places.accepted_payments` je `NULL` = neznámé / nezadáno |
 

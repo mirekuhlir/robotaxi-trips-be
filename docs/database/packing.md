@@ -211,8 +211,8 @@ ORDER BY spi.priority DESC, ci.sort_order;
 
 #### Výpočet na segment
 
-1. Načíst `weather_records` pro segment podle [Lookup počasí podle typu segmentu](weather-and-climate.md#lookup-počasí-podle-typu-segmentu) (kroky 1–4; krok 4 řeší fallback vzduchové i pocitové teploty).
-2. Načíst aktivní `clothing_rules` (včetně junction tabulek) a vyhodnotit podmínky proti každému načtenému počasí a kontextu segmentu (`difficulty`, délka, `non_accommodation_activity`). U teploty: pokud rule má alespoň jeden `feels_like_*` práh, matchovat jen proti efektivní pocitové; jinak proti efektivní vzduchové (viz [clothing_rules](#clothing_rules)). **Weather-based pravidlo matchuje segment, pokud splní podmínky proti alespoň jednomu načtenému `(weather_region_id, week_start)` záznamu** (OR logika — např. deštník při dešti v libovolném dotčeném regionu nebo týdnu). Segment-only podmínky (`clothing_rule_difficulties`, `non_accommodation_activity`, `min_duration_minutes_gte`) se vyhodnocují normálně i bez weather záznamu.
+1. Načíst `weather_records` pro segment podle [Lookup počasí podle typu segmentu](weather-and-climate.md#lookup-počasí-podle-typu-segmentu) (kroky 1–4; krok 3 zahrnuje [geo-fallback](weather-and-climate.md#hierarchie-oblastí-a-geo-fallback) na rodičovskou oblast, když na oblasti místa záznam chybí; krok 4 řeší fallback vzduchové i pocitové teploty). Klima se pro balení nepoužívá.
+2. Načíst aktivní `clothing_rules` (včetně junction tabulek) a vyhodnotit podmínky proti každému načtenému počasí a kontextu segmentu (`difficulty`, délka, `non_accommodation_activity`). U teploty: pokud rule má alespoň jeden `feels_like_*` práh, matchovat jen proti efektivní pocitové; jinak proti efektivní vzduchové (viz [clothing_rules](#clothing_rules)). **Weather-based pravidlo matchuje segment, pokud splní podmínky proti alespoň jednomu načtenému `(resolved_weather_region_id, week_start)` záznamu** (OR logika — např. deštník při dešti v libovolném dotčeném regionu nebo týdnu; region může být rodič přes geo-fallback). Segment-only podmínky (`clothing_rule_difficulties`, `non_accommodation_activity`, `min_duration_minutes_gte`) se vyhodnocují normálně i bez weather záznamu.
 3. Sloučit matching `clothing_item_id` a priority (union; u stejné položky nejvyšší `priority`) a k položce zapamatovat zdroje matching pravidel (viz [Klasifikace zdroje](#klasifikace-zdroje-packing_source)).
 4. Seřadit dle `clothing_rules.priority` a `clothing_items.sort_order`.
 5. `DELETE FROM segment_packing_items WHERE segment_id = :id` (CASCADE smaže i `segment_packing_item_sources`) → `INSERT` matching položek včetně vypočtené nejvyšší `priority` → `INSERT` jejich zdrojů do `segment_packing_item_sources`.
@@ -243,8 +243,8 @@ Labely pro UI mapuje FE z i18n souborů podle `slug` a `users.locale` (fallback 
 Přepočty probíhají v aplikační vrstvě (ne PostgreSQL triggerem).
 
 - změna segmentů výletu → přepočet cache balení, cache robotaxi upozornění, cache cestovních požadavků, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c`, `temperature_source` a ostatních agregací na `trips`
-- změna `weather_records` pro oblasti dotčené výletem → přepočet cache balení, cache robotaxi upozornění a `temp_*` / `feels_like_*`; aplikace musí najít dotčené výlety (segmenty s místy v dané oblasti × protínající lokální ISO týdny)
-- sync `weather_climate_months` pro oblast → přepočet **jen** teplotní cache a `temperature_source` (balení klima nepoužívá — viz [Fallback na klima](weather-and-climate.md#fallback-na-klima))
+- změna `weather_records` pro oblasti dotčené výletem **nebo jejich rodiče v geo-řetězci** → přepočet cache balení, cache robotaxi upozornění a `temp_*` / `feels_like_*`; aplikace musí najít dotčené výlety (segmenty s místy v dané oblasti nebo v potomcích, kteří na ni mohou spadnout × protínající lokální ISO týdny)
+- sync `weather_climate_months` pro oblast (nebo rodiče) → přepočet **jen** teplotní cache a `temperature_source` (balení klima nepoužívá — viz [Fallback na klima](weather-and-climate.md#fallback-na-klima))
 - chybějící `places.weather_region_id` u segmentů → weather-based pravidla se přeskočí; `temp_*` / `feels_like_*` cache může zůstat `NULL` → výlet mimo filtrovaný katalog dle teploty
 
 #### Co zůstává mimo DB
