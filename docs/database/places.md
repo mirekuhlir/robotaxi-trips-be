@@ -55,6 +55,8 @@ Pravidla zápisu a agregace uživatelských recenzí (trip i place) — viz [Rec
 | `longitude` | NUMERIC(9, 6), NOT NULL | Zeměpisná délka (`-180` až `180`) |
 | `category_id` | UUID, FK → place_categories | ON DELETE RESTRICT |
 | `weather_region_id` | UUID, FK → weather_regions, nullable | ON DELETE SET NULL |
+| `external_source` | VARCHAR, nullable | Zdroj importu (např. `google_maps`); `NULL` = místo založené ručně v adminu |
+| `external_place_id` | VARCHAR, nullable | Identifikátor místa u daného zdroje; párový s `external_source` (buď obě `NULL`, nebo obě vyplněné) |
 | `country_code` | CHAR(2), nullable | ISO 3166-1 alpha-2 (`CZ`, `AT`, …); `NULL` = neznámá země — geo pravidla cestovních požadavků se pro dané místo přeskočí |
 | `postal_code` | VARCHAR, nullable | Normalizované PSČ/ZIP z geocodingu; pro auto-párování s `weather_regions` |
 | `subdivision_code` | VARCHAR, nullable | ISO 3166-2 bez prefixu země (`CA`, `20`) |
@@ -112,6 +114,30 @@ Validace v aplikaci: stejná jako u `trip_review_media` — viz [Recenze](users-
 ---
 
 ## Poznámky k implementaci
+
+### Import a deduplikace míst
+
+Dvojice `(external_source, external_place_id)` je **stabilní identita importovaného místa**. Bez ní by opakovaný import založil duplicitní řádky, `place_reviews` by se rozpadly mezi dva záznamy téhož místa a `places.rating` by přestal odpovídat realitě.
+
+- Partial unique index `uq_places_external` (`WHERE external_source IS NOT NULL`) — ručně založená místa mají obě pole `NULL` a index je neomezuje.
+- CHECK párovosti: `(external_source IS NULL) = (external_place_id IS NULL)` — nelze uložit ID bez zdroje ani naopak.
+- Re-import je **upsert** na tuto dvojici:
+
+```sql
+INSERT INTO places (external_source, external_place_id, name, description, latitude, longitude, rating, ...)
+VALUES (:source, :external_id, ...)
+ON CONFLICT (external_source, external_place_id) DO UPDATE SET
+  name = EXCLUDED.name,
+  description = EXCLUDED.description,
+  latitude = EXCLUDED.latitude,
+  longitude = EXCLUDED.longitude,
+  rating = EXCLUDED.rating,
+  updated_at = now();
+```
+
+- Import **nikdy** nepřepisuje `review_rating_avg` / `review_rating_count` (cache z UGC `place_reviews`), `weather_region_id` (ruční / admin přiřazení) ani `category_id`, pokud ho admin ručně změnil.
+- `external_source` je volný slug zdroje, ne enum — přidání dalšího poskytovatele nevyžaduje migraci typu.
+- Ručně založené místo lze později „adoptovat“ doplněním obou polí; kolizi s již importovaným místem zachytí unique index.
 
 ### Geografické dotazy
 

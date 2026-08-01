@@ -13,7 +13,7 @@ Katalog doporučených položek oblečení a vybavení.
 | `id` | UUID, PK | |
 | `slug` | VARCHAR, UNIQUE, NOT NULL | Stabilní klíč, např. `light_jacket`, `umbrella`, `sunscreen` |
 | `category` | clothing_category | Skupina pro UI |
-| `sort_order` | SMALLINT | Výchozí pořadí v seznamu; `>= 0` |
+| `sort_order` | SMALLINT, NOT NULL | Pořadí v seznamu; výchozí `0`; `>= 0` |
 | `is_active` | BOOLEAN | Výchozí `true` — skrytí bez mazání |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
@@ -58,7 +58,7 @@ Pravidla mapující podmínky (počasí + kontext segmentu) na položku oblečen
 | `feels_like_max_c_gte` | NUMERIC(4, 1), nullable | Match proti efektivní pocitové max |
 | `rainy_days_gte` | SMALLINT, nullable | Match proti `weather_records.rainy_days` |
 | `min_duration_minutes_gte` | INTEGER, nullable | Match proti délce segmentu `(end_time - start_time)` |
-| `non_accommodation_activity` | BOOLEAN, nullable | `true` = jen segmenty `segment_kind = activity` mimo kategorii `accommodation` na `start_place_id` (aktivity v hotelu — spa, snídaně — tedy pravidlo nespustí); `NULL` = nevyhodnocovat |
+| `non_accommodation_activity` | BOOLEAN, nullable | `true` = jen segmenty `segment_kind = activity` mimo kategorii `accommodation` na `start_place_id` (aktivity v hotelu — spa, snídaně — tedy pravidlo nespustí); `NULL` = nevyhodnocovat. Hodnota `false` je zakázaná DB CHECK constraintem — byla by tichý třetí stav bez sémantiky |
 | `is_active` | BOOLEAN | Výchozí `true` |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
@@ -135,6 +135,18 @@ Cache doporučeného oblečení per segment (0..N položek). Přepočet v aplika
 | `clothing_item_id` | UUID, PK, FK → clothing_items | ON DELETE RESTRICT |
 | `priority` | SMALLINT, NOT NULL | Nejvyšší priorita matching `clothing_rules` pro daný segment a položku |
 
+### `segment_packing_item_sources`
+
+Sledování, proč byla položka na segmentu doporučena (weather vs. segment kontext). Stejný tvar jako `trip_packing_item_sources` — bez sloupce `priority`, protože efektivní priorita je v `segment_packing_items`.
+
+Díky této tabulce je trip-level cache **plně odvoditelná ze segmentové**: `trip_packing_item_sources` je union těchto řádků přes segmenty výletu, takže agregace nemusí znovu vyhodnocovat `clothing_rules`.
+
+| Sloupec | Typ | Popis |
+|---|---|---|
+| `segment_id` | UUID, PK | Součást složeného FK `(segment_id, clothing_item_id)` → `segment_packing_items(segment_id, clothing_item_id)` ON DELETE CASCADE |
+| `clothing_item_id` | UUID, PK | Součást složeného FK `(segment_id, clothing_item_id)` → `segment_packing_items(segment_id, clothing_item_id)` ON DELETE CASCADE |
+| `source` | packing_source, PK | |
+
 
 ### `trip_packing_items`
 
@@ -148,7 +160,7 @@ Agregovaná cache doporučeného oblečení na úrovni výletu (0..N položek). 
 
 ### `trip_packing_item_sources`
 
-Sledování, proč byla položka na úrovni výletu doporučena (weather vs. segment kontext).
+Sledování, proč byla položka na úrovni výletu doporučena (weather vs. segment kontext). Obsah je **union `segment_packing_item_sources`** přes segmenty výletu.
 
 Na rozdíl od `trip_travel_requirement_sources` tabulka **nemá sloupec `priority`** — záměrná asymetrie: oba zdroje balení (`weather`, `segment`) se při přepočtu kompletně regenerují z `clothing_rules`, takže per-zdroj prioritu není třeba perzistovat; efektivní priorita položky je v `trip_packing_items.priority`. U cestovních požadavků naopak zdroj `manual` musí přežít přepočet geo pravidel i se svou prioritou.
 
@@ -165,15 +177,16 @@ Na rozdíl od `trip_travel_requirement_sources` tabulka **nemá sloupec `priorit
 
 ### Doporučené oblečení
 
-Doporučení se **neukládá na `weather_records` ani `places`**. Počasí zůstává týdenní a regionální; oblečení je odvozenina z počasí + kontextu segmentu. Cache je v relačních tabulkách `segment_packing_items` (per segment) a `trip_packing_items` + `trip_packing_item_sources` (agregace na výlet) — UI labely i ikony mapuje FE z i18n klíčů odvozených od `clothing_items.slug` (případně `category`).
+Doporučení se **neukládá na `weather_records` ani `places`**. Počasí zůstává týdenní a regionální; oblečení je odvozenina z počasí + kontextu segmentu. Cache je v relačních tabulkách `segment_packing_items` + `segment_packing_item_sources` (per segment) a `trip_packing_items` + `trip_packing_item_sources` (agregace na výlet) — UI labely i ikony mapuje FE z i18n klíčů odvozených od `clothing_items.slug` (případně `category`).
 
 #### Cache tabulky
 
 | Tabulka | Úroveň | Obsah |
 |---|---|---|
 | `segment_packing_items` | segment | Které `clothing_items` doporučit pro daný segment + nejvyšší `priority` z matching pravidel |
+| `segment_packing_item_sources` | segment × položka | Proč doporučeno na segmentu: `weather` a/nebo `segment` |
 | `trip_packing_items` | výlet | Agregovaný seznam s `priority` (union ze segmentů; u stejné položky nejvyšší priorita) |
-| `trip_packing_item_sources` | výlet × položka | Proč doporučeno: `weather` a/nebo `segment` |
+| `trip_packing_item_sources` | výlet × položka | Proč doporučeno: union zdrojů ze `segment_packing_item_sources` |
 | `trips.packing_computed_at` | výlet | Čas posledního přepočtu |
 
 **Příklad dotazu — doporučení pro detail výletu:**
@@ -200,15 +213,28 @@ ORDER BY spi.priority DESC, ci.sort_order;
 
 1. Načíst `weather_records` pro segment podle [Lookup počasí podle typu segmentu](weather-and-climate.md#lookup-počasí-podle-typu-segmentu) (kroky 1–4; krok 4 řeší fallback vzduchové i pocitové teploty).
 2. Načíst aktivní `clothing_rules` (včetně junction tabulek) a vyhodnotit podmínky proti každému načtenému počasí a kontextu segmentu (`difficulty`, délka, `non_accommodation_activity`). U teploty: pokud rule má alespoň jeden `feels_like_*` práh, matchovat jen proti efektivní pocitové; jinak proti efektivní vzduchové (viz [clothing_rules](#clothing_rules)). **Weather-based pravidlo matchuje segment, pokud splní podmínky proti alespoň jednomu načtenému `(weather_region_id, week_start)` záznamu** (OR logika — např. deštník při dešti v libovolném dotčeném regionu nebo týdnu). Segment-only podmínky (`clothing_rule_difficulties`, `non_accommodation_activity`, `min_duration_minutes_gte`) se vyhodnocují normálně i bez weather záznamu.
-3. Sloučit matching `clothing_item_id` a priority (union; u stejné položky nejvyšší `priority`).
+3. Sloučit matching `clothing_item_id` a priority (union; u stejné položky nejvyšší `priority`) a k položce zapamatovat zdroje matching pravidel (viz [Klasifikace zdroje](#klasifikace-zdroje-packing_source)).
 4. Seřadit dle `clothing_rules.priority` a `clothing_items.sort_order`.
-5. `DELETE FROM segment_packing_items WHERE segment_id = :id` → `INSERT` matching položek včetně vypočtené nejvyšší `priority`.
+5. `DELETE FROM segment_packing_items WHERE segment_id = :id` (CASCADE smaže i `segment_packing_item_sources`) → `INSERT` matching položek včetně vypočtené nejvyšší `priority` → `INSERT` jejich zdrojů do `segment_packing_item_sources`.
+
+#### Klasifikace zdroje (`packing_source`)
+
+Zdroj se určuje podle podmínek matching pravidla. Pravidlo s alespoň jednou weather podmínkou (teplotní sloupce `temp_*` / `feels_like_*`, `rainy_days_gte`, junction tabulky `clothing_rule_precipitation_intensities` / `clothing_rule_wind_forces` / `clothing_rule_fog_conditions` / `clothing_rule_sky_conditions`) přispívá zdrojem `weather`; pravidlo s alespoň jednou segment podmínkou (`clothing_rule_difficulties`, `min_duration_minutes_gte`, `non_accommodation_activity`) přispívá zdrojem `segment`. **Smíšené pravidlo přispívá oběma zdroji.** Položka tak může mít řádek pro `weather` i `segment` — z jednoho smíšeného pravidla nebo z více různých pravidel.
+
+Klasifikace probíhá **na úrovni segmentu** a zapisuje se do `segment_packing_item_sources`; trip-level tabulka je jen union.
 
 #### Agregace na výlet
 
-Pro detail výletu sloučit doporučení ze **všech** řádků `segment_packing_items` (union podle `clothing_item_id`). U stejné položky z více segmentů vyhrává **nejvyšší** `priority`. Výsledek uložit do `trip_packing_items`; zdroje (`weather` / `segment`) do `trip_packing_item_sources`. Nastavit `trips.packing_computed_at`.
+Pro detail výletu sloučit doporučení ze **všech** řádků `segment_packing_items` (union podle `clothing_item_id`). U stejné položky z více segmentů vyhrává **nejvyšší** `priority`. Výsledek uložit do `trip_packing_items`; zdroje do `trip_packing_item_sources` jako union `segment_packing_item_sources` přes segmenty výletu — agregace tedy nemusí znovu vyhodnocovat `clothing_rules`. Nastavit `trips.packing_computed_at`.
 
-**Klasifikace zdroje (`packing_source`):** zdroj se určuje podle podmínek matching pravidla. Pravidlo s alespoň jednou weather podmínkou (teplotní sloupce `temp_*` / `feels_like_*`, `rainy_days_gte`, junction tabulky `clothing_rule_precipitation_intensities` / `clothing_rule_wind_forces` / `clothing_rule_fog_conditions` / `clothing_rule_sky_conditions`) přispívá zdrojem `weather`; pravidlo s alespoň jednou segment podmínkou (`clothing_rule_difficulties`, `min_duration_minutes_gte`, `non_accommodation_activity`) přispívá zdrojem `segment`. **Smíšené pravidlo přispívá oběma zdroji.** Položka tak může mít v `trip_packing_item_sources` řádek pro `weather` i `segment` — z jednoho smíšeného pravidla nebo z více různých pravidel.
+```sql
+-- zdroje na úrovni výletu = union segmentových zdrojů
+INSERT INTO trip_packing_item_sources (trip_id, clothing_item_id, source)
+SELECT DISTINCT s.trip_id, spis.clothing_item_id, spis.source
+FROM segment_packing_item_sources spis
+JOIN segments s ON s.id = spis.segment_id
+WHERE s.trip_id = :trip_id;
+```
 
 Labely pro UI mapuje FE z i18n souborů podle `slug` a `users.locale` (fallback na výchozí jazyk aplikace).
 
@@ -216,8 +242,9 @@ Labely pro UI mapuje FE z i18n souborů podle `slug` a `users.locale` (fallback 
 
 Přepočty probíhají v aplikační vrstvě (ne PostgreSQL triggerem).
 
-- změna segmentů výletu → přepočet cache balení, cache robotaxi upozornění, cache cestovních požadavků, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c` a ostatních agregací na `trips`
+- změna segmentů výletu → přepočet cache balení, cache robotaxi upozornění, cache cestovních požadavků, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c`, `temperature_source` a ostatních agregací na `trips`
 - změna `weather_records` pro oblasti dotčené výletem → přepočet cache balení, cache robotaxi upozornění a `temp_*` / `feels_like_*`; aplikace musí najít dotčené výlety (segmenty s místy v dané oblasti × protínající lokální ISO týdny)
+- sync `weather_climate_months` pro oblast → přepočet **jen** teplotní cache a `temperature_source` (balení klima nepoužívá — viz [Fallback na klima](weather-and-climate.md#fallback-na-klima))
 - chybějící `places.weather_region_id` u segmentů → weather-based pravidla se přeskočí; `temp_*` / `feels_like_*` cache může zůstat `NULL` → výlet mimo filtrovaný katalog dle teploty
 
 #### Co zůstává mimo DB

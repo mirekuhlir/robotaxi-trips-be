@@ -45,7 +45,13 @@ CHECK (
   (rating_count = 0 AND rating_avg IS NULL)
   OR (rating_count > 0 AND rating_avg IS NOT NULL)
 )
+CHECK (
+  (temperature_source IS NULL AND feels_like_min_c IS NULL AND feels_like_max_c IS NULL)
+  OR (temperature_source IS NOT NULL AND feels_like_min_c IS NOT NULL AND feels_like_max_c IS NOT NULL)
+)
 ```
+
+`temperature_source` je vázaný na pocitovou cache: buď je vyplněný zdroj i obě meze, nebo je vše `NULL`. Vzduchová `temp_*` se plní týmž průchodem a díky fallbacku na `temp_avg_c` (NOT NULL v obou zdrojových tabulkách) je vyplněná vždy, když je vyplněná pocitová — viz [Fallback na klima](weather-and-climate.md#fallback-na-klima).
 
 **`users`:**
 
@@ -82,6 +88,7 @@ CHECK (
   OR (review_rating_count > 0 AND review_rating_avg IS NOT NULL)
 )
 CHECK (phone_calling_code IS NULL OR phone_calling_code ~ '^[0-9]{1,3}$')
+CHECK ((external_source IS NULL) = (external_place_id IS NULL))
 ```
 
 Neznámá / nezadaná platba = `accepted_payments IS NULL`. Žádný CHECK ani index navíc — hodnoty pokrývá typ `place_accepted_payments`.
@@ -110,19 +117,15 @@ CHECK (temp_avg_c BETWEEN -90 AND 60)
 CHECK (temp_min_c IS NULL OR temp_min_c BETWEEN -90 AND 60)
 CHECK (temp_max_c IS NULL OR temp_max_c BETWEEN -90 AND 60)
 CHECK (temp_min_c IS NULL OR temp_max_c IS NULL OR temp_min_c <= temp_max_c)
-CHECK (
-  temp_min_c IS NULL OR temp_max_c IS NULL
-  OR (temp_avg_c >= temp_min_c AND temp_avg_c <= temp_max_c)
-)
+CHECK (temp_min_c IS NULL OR temp_avg_c >= temp_min_c)
+CHECK (temp_max_c IS NULL OR temp_avg_c <= temp_max_c)
 CHECK (humidity_avg_pct IS NULL OR (humidity_avg_pct >= 0 AND humidity_avg_pct <= 100))
 CHECK (feels_like_avg_c IS NULL OR feels_like_avg_c BETWEEN -90 AND 60)
 CHECK (feels_like_min_c IS NULL OR feels_like_min_c BETWEEN -90 AND 60)
 CHECK (feels_like_max_c IS NULL OR feels_like_max_c BETWEEN -90 AND 60)
 CHECK (feels_like_min_c IS NULL OR feels_like_max_c IS NULL OR feels_like_min_c <= feels_like_max_c)
-CHECK (
-  feels_like_avg_c IS NULL OR feels_like_min_c IS NULL OR feels_like_max_c IS NULL
-  OR (feels_like_avg_c >= feels_like_min_c AND feels_like_avg_c <= feels_like_max_c)
-)
+CHECK (feels_like_avg_c IS NULL OR feels_like_min_c IS NULL OR feels_like_avg_c >= feels_like_min_c)
+CHECK (feels_like_avg_c IS NULL OR feels_like_max_c IS NULL OR feels_like_avg_c <= feels_like_max_c)
 CHECK (sunshine_hours IS NULL OR (sunshine_hours >= 0 AND sunshine_hours <= 168))
 CHECK (rain_mm >= 0)
 CHECK (rainy_days BETWEEN 0 AND 7)
@@ -136,6 +139,12 @@ CHECK (precipitation_intensity <> 'none' OR (rain_mm = 0 AND rainy_days = 0))
 CHECK (fog_condition <> 'none' OR fog_days = 0)
 ```
 
+Kontroly průměru jsou **jednostranné** záměrně — `temp_avg_c` se validuje i tehdy, když je vyplněná jen jedna z mezí. Totéž platí pro `feels_like_avg_c`.
+
+Opačný směr srážek je **povolený**: `precipitation_intensity <> 'none'` s `rain_mm = 0` a `rainy_days = 0` není chyba — mrholení pod 0,05 mm se v ingestu zaokrouhlí na `0.0`. Vynucená je jen implikace `none ⇒ nulové srážky` (a její kontrapozice). Stejně tak `fog_condition <> 'none'` s `fog_days = 0`.
+
+Konzistence `fog_condition` × `visibility_avg_m` **není** DB CHECK — ingest z různých API je šumivý a tvrdý constraint by shazoval import. Soft kontrola je v aplikační vrstvě (viz níže).
+
 **`weather_climate_months`:**
 
 ```sql
@@ -144,19 +153,15 @@ CHECK (temp_avg_c BETWEEN -90 AND 60)
 CHECK (temp_min_c IS NULL OR temp_min_c BETWEEN -90 AND 60)
 CHECK (temp_max_c IS NULL OR temp_max_c BETWEEN -90 AND 60)
 CHECK (temp_min_c IS NULL OR temp_max_c IS NULL OR temp_min_c <= temp_max_c)
-CHECK (
-  temp_min_c IS NULL OR temp_max_c IS NULL
-  OR (temp_avg_c >= temp_min_c AND temp_avg_c <= temp_max_c)
-)
+CHECK (temp_min_c IS NULL OR temp_avg_c >= temp_min_c)
+CHECK (temp_max_c IS NULL OR temp_avg_c <= temp_max_c)
 CHECK (humidity_avg_pct IS NULL OR (humidity_avg_pct >= 0 AND humidity_avg_pct <= 100))
 CHECK (feels_like_avg_c IS NULL OR feels_like_avg_c BETWEEN -90 AND 60)
 CHECK (feels_like_min_c IS NULL OR feels_like_min_c BETWEEN -90 AND 60)
 CHECK (feels_like_max_c IS NULL OR feels_like_max_c BETWEEN -90 AND 60)
 CHECK (feels_like_min_c IS NULL OR feels_like_max_c IS NULL OR feels_like_min_c <= feels_like_max_c)
-CHECK (
-  feels_like_avg_c IS NULL OR feels_like_min_c IS NULL OR feels_like_max_c IS NULL
-  OR (feels_like_avg_c >= feels_like_min_c AND feels_like_avg_c <= feels_like_max_c)
-)
+CHECK (feels_like_avg_c IS NULL OR feels_like_min_c IS NULL OR feels_like_avg_c >= feels_like_min_c)
+CHECK (feels_like_avg_c IS NULL OR feels_like_max_c IS NULL OR feels_like_avg_c <= feels_like_max_c)
 CHECK (sunshine_hours IS NULL OR (sunshine_hours >= 0 AND sunshine_hours <= 744))
 CHECK (rain_mm >= 0)
 CHECK (rainy_days BETWEEN 0 AND 31)
@@ -188,7 +193,10 @@ CHECK (feels_like_min_c_gte IS NULL OR feels_like_min_c_lte IS NULL OR feels_lik
 CHECK (feels_like_max_c_gte IS NULL OR feels_like_max_c_lte IS NULL OR feels_like_max_c_gte <= feels_like_max_c_lte)
 CHECK (rainy_days_gte IS NULL OR rainy_days_gte BETWEEN 0 AND 7)
 CHECK (min_duration_minutes_gte IS NULL OR min_duration_minutes_gte >= 0)
+CHECK (non_accommodation_activity IS NULL OR non_accommodation_activity)
 ```
+
+`non_accommodation_activity` má jen dva smysluplné stavy: `NULL` = podmínku nevyhodnocovat, `true` = podmínka platí. Hodnota `false` by byla tichý třetí stav bez definované sémantiky, proto ji CHECK zakazuje.
 
 **`travel_requirement_rules`:**
 
@@ -260,7 +268,10 @@ Tyto invarianty PostgreSQL CHECK neřeší — vynucuj je aplikace při zápisu:
 - agregace věku aktivit nesmí vést k `recommended_age_min > recommended_age_max` na `trips` — jinak poruší DB CHECK; aplikace detekuje konflikt při uložení segmentu před COMMIT
 - `places.weather_region_id` smí odkazovat jen na `weather_regions` ve stejné zemi (`places.country_code = weather_regions.country_code`, pokud je `places.country_code` vyplněné); při ručním přiřazení validuj i jemnější shodu podle typu regionu (`postal_code`, `locality`, `subdivision`), pokud jsou příslušná pole na místě známá
 - u `places` prázdné řetězce `name` / `description` / `website_url` / `address` / `phone_calling_code` / `telephone` normalizuj na `NULL`; `website_url` při vyplnění musí být HTTPS URL; `phone_calling_code` jen číslice bez vedoucího `+` (1–3 znaky); `telephone` bez předvolby — FE pro `tel:` odkaz spojí číslice z obou polí; externí `rating` (Google Maps–style) volitelné, při vyplnění `1.0`–`5.0` — **ne** přepisovat z `place_reviews`
+- import míst probíhá jako upsert na `(external_source, external_place_id)`; import nesmí přepsat `review_rating_avg` / `review_rating_count` ani ruční `weather_region_id` — viz [Import a deduplikace míst](places.md#import-a-deduplikace-míst)
 - pravidla zápisu a agregace uživatelských recenzí (`trip_reviews`, `place_reviews`, media) — viz [Recenze](users-and-trips.md#recenze)
+- při ingestu `weather_records` ověř soft konzistenci mlhy a viditelnosti proti prahům z tabulky [`fog_condition`](weather-and-climate.md#fog_condition): `none` / `haze` ⇒ `visibility_avg_m >= 2000`, `mist` ⇒ `1000`–`2000`, `fog` ⇒ pod `1000`, `dense_fog` ⇒ pod `200`. Nesoulad **neblokuje** zápis (různá API měří jinak) — loguj varování a preferuj hodnotu z primárního zdroje
+- u `provider_service_areas` s `operates_24_7 = false` znamená `daily_end_local < daily_start_local` okno **přes půlnoc** (např. `06:00`–`02:00`); vyhodnocení provozní doby musí tento případ pokrýt. `daily_start_local = daily_end_local` je nejednoznačné — aplikace ho odmítne a vyžádá `operates_24_7 = true`
 - `clothing_rules` musí mít alespoň jednu aktivní podmínku (skalární sloupec, `non_accommodation_activity = true`, nebo ≥1 řádek v junction tabulce) — pravidlo bez podmínky je neplatné
 - `travel_requirement_rules` musí mít alespoň jednu aktivní podmínku (skalární sloupec NOT NULL) — pravidlo bez podmínky je neplatné
 - `robotaxi_advisory_rules` musí mít alespoň jednu aktivní podmínku (skalární sloupec NOT NULL nebo ≥1 řádek v junction tabulce) — pravidlo bez podmínky je neplatné
@@ -306,6 +317,7 @@ ALTER TABLE segments
 | `trip_reviews` | `idx_trip_reviews_user_id` | „Moje recenze výletů“ |
 | `trip_reviews` | `idx_trip_reviews_trip_created_at` (`trip_id`, `created_at`) | Seznam recenzí na detailu výletu |
 | `trip_review_media` | `idx_trip_review_media_review_sort` (`review_id`, `sort_order`) | Galerie médií recenze v pořadí `ORDER BY sort_order, id` |
+| `places` | `uq_places_external` (partial, `WHERE external_source IS NOT NULL`) | Stabilní identita importovaného místa; upsert při re-importu |
 | `places` | `idx_places_coordinates` | Geografické dotazy (blízkost bodu) |
 | `places` | `idx_places_review_rating_avg` | Řazení a filtrování dle uživatelského hodnocení místa |
 | `places` | `idx_places_weather_region_id` | Místa v dané oblasti počasí |
@@ -318,7 +330,8 @@ ALTER TABLE segments
 | `weather_regions` | `uq_weather_regions_postal` (partial, `WHERE region_type = 'postal_code'`) | Unikátní `(country_code, postal_code)` |
 | `weather_regions` | `uq_weather_regions_locality` (partial, `WHERE region_type = 'locality'`) | Unikátní `(country_code, subdivision_code, locality)`; `subdivision_code` je pro locality povinné, takže unikátnost nepropouští duplicitní `NULL` subdivize |
 | `weather_regions` | `uq_weather_regions_subdivision` (partial, `WHERE region_type = 'subdivision'`) | Unikátní `(country_code, subdivision_code)` |
-| `weather_records` | `idx_weather_records_week_start` | Řazení / filtrování historických týdnů; lookup per segment primárně přes `UNIQUE (weather_region_id, week_start)` |
+| `weather_records` | `uq_weather_records_region_week` (`weather_region_id`, `week_start`) | Unikátní záznam per oblast × lokální ISO týden; primární lookup počasí pro segment |
+| `weather_records` | `idx_weather_records_week_start` | Řazení / filtrování historických týdnů |
 | `weather_climate_months` | `uq_weather_climate_months_region_month` (`weather_region_id`, `month`) | Unikátní klimatický normál per oblast × měsíc; lookup 12 měsíců oblasti i přes leading FK sloupec |
 | `segments` | `idx_segments_trip_start_time` (`trip_id`, `start_time`) | Lineární timeline itineráře; řazení `ORDER BY start_time, id` |
 | `segments` | `idx_segments_start_place_id` | Dotčené výlety při změně místa, `country_code` nebo invalidaci cache |
@@ -359,6 +372,7 @@ ALTER TABLE segments
 | `trip_packing_items` | PK `(trip_id, clothing_item_id)` | Agregovaná cache balení výletu |
 | `trip_packing_item_sources` | PK `(trip_id, clothing_item_id, source)` | Zdroje doporučení |
 | `segment_packing_items` | PK `(segment_id, clothing_item_id)` + `priority` | Cache balení per segment |
+| `segment_packing_item_sources` | PK `(segment_id, clothing_item_id, source)` | Zdroje doporučení per segment; trip zdroje jsou jejich union |
 | `travel_requirement_items` | `idx_travel_requirement_items_active` (partial, `WHERE is_active = true`) | Jen aktivní položky |
 | `travel_requirement_rules` | `idx_travel_requirement_rules_item_id` | Pravidla pro položku |
 | `travel_requirement_rules` | `idx_travel_requirement_rules_active` (partial, `WHERE is_active = true`) | Jen aktivní pravidla |
