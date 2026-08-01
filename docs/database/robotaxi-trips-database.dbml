@@ -8,10 +8,14 @@ Project robotaxitrips {
     Plánování itinerářů a výletů s integrací autonomní dopravy.
     Plně relační schéma — bez JSONB.
     Cache na trips: total_cost_usd, total_cost_home, total_duration_minutes, recommended_age_*,
-    max_difficulty, temp_*, rating_avg/rating_count, packing_computed_at + trip_packing_items,
+    max_difficulty, temp_*, feels_like_*, temperature_source, rating_avg/rating_count,
+    packing_computed_at + trip_packing_items (+ trip_packing_item_sources),
     travel_requirements_computed_at + trip_travel_requirements,
     robotaxi_advisories_computed_at + trip_robotaxi_advisories.
-    Cache na places: review_rating_avg/review_rating_count (UGC); places.rating = externí Maps.
+    Cache na segmentu: segment_packing_items (+ segment_packing_item_sources), segment_robotaxi_advisories.
+    Teplotní cache má fallback z weather_records na weather_climate_months; zdroj nese temperature_source.
+    Cache na places: review_rating_avg/review_rating_count (UGC); places.rating = externí Maps;
+    identita importovaného místa = (external_source, external_place_id).
     Diagramový zdroj pro dbdiagram.io; SQL migrace se píšou ručně podle .md.
     CHECK, partial indexy, ON DELETE akce a exclusion constrainty jsou v DBML jen poznámkami.
     Unique indexy označené jako partial nesmí být z DBML generované jako běžné globální UNIQUE.
@@ -95,10 +99,10 @@ Enum sky_condition {
   clear
   mostly_sunny
   partly_cloudy
+  variable [note: 'Proměnlivá oblačnost — uprostřed škály, aby MAX() nepřebil overcast']
   mostly_cloudy
   cloudy
-  overcast
-  variable
+  overcast [note: 'Pořadí = rostoucí zataženost pro MAX()']
 }
 
 Enum wind_force {
@@ -137,6 +141,11 @@ Enum travel_requirement_source {
   manual
 }
 
+Enum temperature_source {
+  weather_records [note: 'Všechny přispívající kombinace region × týden měly týdenní záznam']
+  climate [note: 'Alespoň jedna kombinace se dopočítala z weather_climate_months']
+}
+
 Enum weather_region_type {
   postal_code
   locality
@@ -172,6 +181,7 @@ TableGroup core_trips {
   segments
   segment_images
   segment_packing_items
+  segment_packing_item_sources
   transit_details
 }
 
@@ -208,10 +218,11 @@ Table trips {
   recommended_age_min smallint [note: 'Cache MAX z aktivit']
   recommended_age_max smallint [note: 'Cache MIN z aktivit']
   max_difficulty segment_difficulty [note: 'Cache MAX z aktivit']
-  temp_min_c numeric(4,1) [note: 'Cache vzduchové teploty z weather_records']
-  temp_max_c numeric(4,1) [note: 'Cache vzduchové teploty z weather_records']
-  feels_like_min_c numeric(4,1) [note: 'Cache pocitové teploty z weather_records; primární katalogový filtr']
-  feels_like_max_c numeric(4,1) [note: 'Cache pocitové teploty z weather_records; primární katalogový filtr']
+  temp_min_c numeric(4,1) [note: 'Cache vzduchové teploty (weather_records, fallback weather_climate_months)']
+  temp_max_c numeric(4,1) [note: 'Cache vzduchové teploty (weather_records, fallback weather_climate_months)']
+  feels_like_min_c numeric(4,1) [note: 'Cache pocitové teploty; primární katalogový filtr']
+  feels_like_max_c numeric(4,1) [note: 'Cache pocitové teploty; primární katalogový filtr']
+  temperature_source temperature_source [note: 'Odkud je teplotní cache (weather_records / climate); NULL = žádná vyřešitelná teplota']
   rating_avg numeric(2,1) [note: 'Cache AVG(trip_reviews.score); NULL při rating_count = 0; CHECK 1–5']
   rating_count integer [not null, default: 0, note: 'Cache COUNT(trip_reviews); CHECK >= 0; count 0 ⇔ avg NULL']
   packing_computed_at timestamptz [note: 'Čas posledního přepočtu cache balení']
@@ -298,7 +309,7 @@ Table trip_packing_item_sources {
   clothing_item_id uuid [pk]
   source packing_source [pk]
 
-  Note: 'Proč byla položka doporučena: weather / segment (smíšené pravidlo přispívá oběma zdroji). Composite FK na trip_packing_items. Bez sloupce priority (záměrně) — oba zdroje se při přepočtu plně regenerují; efektivní priorita je v trip_packing_items.'
+  Note: 'Proč byla položka doporučena: weather / segment (smíšené pravidlo přispívá oběma zdroji). Union segment_packing_item_sources přes segmenty výletu. Composite FK na trip_packing_items. Bez sloupce priority (záměrně) — oba zdroje se při přepočtu plně regenerují; efektivní priorita je v trip_packing_items.'
 }
 
 Table trip_travel_requirements {
@@ -336,7 +347,7 @@ TableGroup places_weather {
 
 Table place_categories {
   id uuid [pk, default: `gen_random_uuid()`]
-  name varchar [unique, not null, note: 'Slug — viz seed v docs/database/02-places.md']
+  name varchar [unique, not null, note: 'Slug — viz seed v docs/database/places.md']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
 
@@ -383,6 +394,8 @@ Table places {
   longitude numeric(9,6) [not null, note: 'CHECK BETWEEN -180 AND 180']
   category_id uuid [not null, ref: > place_categories.id, note: 'ON DELETE RESTRICT']
   weather_region_id uuid [ref: > weather_regions.id, note: 'ON DELETE SET NULL; aplikace validuje shodu country_code']
+  external_source varchar [note: 'Zdroj importu, např. google_maps; NULL = ručně založené místo']
+  external_place_id varchar [note: 'ID místa u zdroje; párové s external_source — CHECK (external_source IS NULL) = (external_place_id IS NULL)']
   country_code char(2) [note: 'ISO 3166-1 alpha-2; NULL = neznámá země; CHECK IS NULL OR ~ ^[A-Z]{2}$']
   postal_code varchar [note: 'Normalizované PSČ/ZIP']
   subdivision_code varchar [note: 'ISO 3166-2 bez prefixu země']
@@ -392,6 +405,7 @@ Table places {
   updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
 
   indexes {
+    (external_source, external_place_id) [unique, name: 'uq_places_external', note: 'SQL: partial UNIQUE WHERE external_source IS NOT NULL — ručně založená místa (obě pole NULL) se do indexu nezahrnují']
     (latitude, longitude) [name: 'idx_places_coordinates']
     weather_region_id [name: 'idx_places_weather_region_id']
     country_code [name: 'idx_places_country_code', note: 'SQL: partial WHERE country_code IS NOT NULL']
@@ -470,12 +484,15 @@ Table weather_records {
   Note: '''
     CHECK: precipitation_intensity = none => rain_mm = 0 AND rainy_days = 0;
     fog_condition = none => fog_days = 0;
+    rainy_days BETWEEN 0 AND 7; fog_days BETWEEN 0 AND 7;
     sunshine_hours IS NULL OR (0..168);
     visibility_avg_m IS NULL OR >= 0;
     wind_speed_* >= 0; avg <= max when both set;
-    temp_avg_c between temp_min_c and temp_max_c when both set;
+    temp_avg_c >= temp_min_c a <= temp_max_c — jednostranně, stačí jedna vyplněná mez;
     humidity_avg_pct IS NULL OR (0..100);
-    feels_like_* same bounds as temp_* (-90..60); min <= max; avg between min and max when all set.
+    feels_like_* same bounds as temp_* (-90..60); min <= max; avg jednostranně vůči min i max.
+    Opačný směr srážek/mlhy je povolený (drizzle zaokrouhlené na 0,0 mm).
+    Konzistence fog_condition x visibility_avg_m je soft validace v aplikaci, ne CHECK.
     DB nepočítá pocitovou teplotu — ukládá hodnoty z ingestu / aplikace.
   '''
 }
@@ -508,12 +525,13 @@ Table weather_climate_months {
 
   Note: '''
     Měsíční klimatický normál (typický měsíc, ne konkrétní rok). Skóre / suitability ideálního měsíce se neperzistuje — odvozenina v aplikaci (teplotní pásmo na feels_like_*).
+    Slouží i jako fallback pro teplotní cache na trips (trips.temperature_source = climate).
     CHECK: precipitation_intensity = none => rain_mm = 0 AND rainy_days = 0;
     fog_condition = none => fog_days = 0;
     sunshine_hours IS NULL OR (0..744);
-    temp_avg_c between temp_min_c and temp_max_c when both set;
+    temp_avg_c >= temp_min_c a <= temp_max_c — jednostranně, stačí jedna vyplněná mez;
     humidity_avg_pct IS NULL OR (0..100);
-    feels_like_* same bounds as temp_* (-90..60); min <= max; avg between min and max when all set.
+    feels_like_* same bounds as temp_* (-90..60); min <= max; avg jednostranně vůči min i max.
   '''
 }
 
@@ -533,7 +551,7 @@ Table clothing_items {
   id uuid [pk, default: `gen_random_uuid()`]
   slug varchar [unique, not null, note: 'light_jacket, umbrella, …']
   category clothing_category [not null]
-  sort_order smallint [not null, note: 'CHECK >= 0']
+  sort_order smallint [not null, default: 0, note: 'CHECK >= 0']
   is_active boolean [not null, default: true]
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
@@ -562,7 +580,7 @@ Table clothing_rules {
   feels_like_max_c_gte numeric(4,1)
   rainy_days_gte smallint
   min_duration_minutes_gte integer
-  non_accommodation_activity boolean [note: 'true = jen activity mimo accommodation na start_place']
+  non_accommodation_activity boolean [note: 'true = jen activity mimo accommodation na start_place; NULL = nevyhodnocovat; CHECK zakazuje false']
   is_active boolean [not null, default: true]
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
@@ -572,7 +590,7 @@ Table clothing_rules {
     is_active [name: 'idx_clothing_rules_active', note: 'SQL: partial WHERE is_active = true']
   }
 
-  Note: 'AND logika mezi skalárními sloupci; IN logika v junction tabulkách. Pokud je vyplněn alespoň jeden feels_like_* práh, matchují se jen pocitové podmínky (temp_* na stejném pravidle se ignorují); jinak vzduchové temp_*. Fallback pocitové hodnoty ve weather_records: feels_like_* → temp_*. CHECK: *_gte <= *_lte když jsou obě vyplněné.'
+  Note: 'AND logika mezi skalárními sloupci; IN logika v junction tabulkách. Pokud je vyplněn alespoň jeden feels_like_* práh, matchují se jen pocitové podmínky (temp_* na stejném pravidle se ignorují); jinak vzduchové temp_*. Fallback pocitové hodnoty ve weather_records: feels_like_* → temp_*. Vyhodnocuje se jen proti weather_records, nikdy proti klimatu. CHECK: *_gte <= *_lte když jsou obě vyplněné; non_accommodation_activity IS NULL OR true.'
 }
 
 Table clothing_rule_precipitation_intensities {
@@ -610,7 +628,7 @@ TableGroup travel_requirements {
 Table travel_requirement_items {
   id uuid [pk, default: `gen_random_uuid()`]
   slug varchar [unique, not null, note: 'passport, visa, national_id, …']
-  sort_order smallint [not null, note: 'CHECK >= 0']
+  sort_order smallint [not null, default: 0, note: 'CHECK >= 0']
   is_active boolean [not null, default: true]
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
@@ -698,7 +716,7 @@ Table provider_service_areas {
   launched_at date
   operates_24_7 boolean [not null, default: true]
   daily_start_local time [note: 'Povinné když operates_24_7 = false']
-  daily_end_local time [note: 'Povinné když operates_24_7 = false']
+  daily_end_local time [note: 'Povinné když operates_24_7 = false; hodnota nižší než daily_start_local = okno přes půlnoc']
   serves_airport boolean [not null, default: false]
   allows_highway boolean [not null, default: false]
   created_at timestamptz [not null, default: `now()`]
@@ -718,7 +736,7 @@ Table robotaxi_advisory_items {
   id uuid [pk, default: `gen_random_uuid()`]
   slug varchar [unique, not null, note: 'dense_fog_disruption, storm_disruption, …']
   severity robotaxi_advisory_severity [not null]
-  sort_order smallint [not null, note: 'CHECK >= 0']
+  sort_order smallint [not null, default: 0, note: 'CHECK >= 0']
   is_active boolean [not null, default: true]
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
@@ -821,6 +839,16 @@ Table segment_packing_items {
 
   Note: 'Cache doporučeného oblečení per segment; trip_packing_items bere max priority ze segmentů.'
 }
+
+Table segment_packing_item_sources {
+  segment_id uuid [pk]
+  clothing_item_id uuid [pk]
+  source packing_source [pk]
+
+  Note: 'Proč byla položka doporučena na segmentu: weather / segment (smíšené pravidlo přispívá oběma zdroji). Composite FK na segment_packing_items. Bez sloupce priority — stejně jako trip_packing_item_sources. trip_packing_item_sources je union těchto řádků přes segmenty výletu.'
+}
+
+Ref: segment_packing_item_sources.(segment_id, clothing_item_id) > segment_packing_items.(segment_id, clothing_item_id) [delete: cascade]
 
 Table segment_robotaxi_advisories {
   segment_id uuid [pk, ref: > segments.id, note: 'ON DELETE CASCADE']

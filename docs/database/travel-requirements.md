@@ -12,7 +12,7 @@ Katalog cestovních požadavků (dokumenty, formality) — oddělený od `clothi
 |---|---|---|
 | `id` | UUID, PK | |
 | `slug` | VARCHAR, UNIQUE, NOT NULL | Stabilní klíč, např. `passport`, `visa`, `national_id`, `travel_insurance` |
-| `sort_order` | SMALLINT | Výchozí pořadí v seznamu; `>= 0` |
+| `sort_order` | SMALLINT, NOT NULL | Pořadí v seznamu; výchozí `0`; `>= 0` |
 | `is_active` | BOOLEAN | Výchozí `true` — skrytí bez mazání |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |

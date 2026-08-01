@@ -69,7 +69,7 @@ Servisní oblasti providerů (geofence na úrovni locality). Robotaxi jezdí jen
 | `launched_at` | DATE, nullable | Datum spuštění veřejného provozu |
 | `operates_24_7` | BOOLEAN | Výchozí `true` |
 | `daily_start_local` | TIME, nullable | Začátek denního provozu (lokální čas oblasti); povinné když `operates_24_7 = false` |
-| `daily_end_local` | TIME, nullable | Konec denního provozu; povinné když `operates_24_7 = false` |
+| `daily_end_local` | TIME, nullable | Konec denního provozu; povinné když `operates_24_7 = false`; hodnota **nižší** než `daily_start_local` znamená okno přes půlnoc (viz [Provozní okno](#provozní-okno)) |
 | `serves_airport` | BOOLEAN | Výchozí `false` — obsluha letišť |
 | `allows_highway` | BOOLEAN | Výchozí `false` — jízda po dálnici |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
@@ -88,7 +88,7 @@ Katalog robotaxi upozornění (počasí × provoz) — oddělený od `clothing_i
 | `id` | UUID, PK | |
 | `slug` | VARCHAR, UNIQUE, NOT NULL | Stabilní klíč, např. `dense_fog_disruption`, `storm_disruption` |
 | `severity` | robotaxi_advisory_severity, NOT NULL | `info` nebo `warning` |
-| `sort_order` | SMALLINT | Výchozí pořadí v seznamu; `>= 0` |
+| `sort_order` | SMALLINT, NOT NULL | Pořadí v seznamu; výchozí `0`; `>= 0` |
 | `is_active` | BOOLEAN | Výchozí `true` |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
@@ -255,7 +255,19 @@ Při uložení robotaxi segmentu aplikace pro `provider_id` a místa `start_plac
 
 Doplňková kontrola (volitelně v aplikaci):
 - letiště na trase + `serves_airport = false` → varování
-- segment mimo `daily_start_local`–`daily_end_local` když `operates_24_7 = false` → varování
+- segment mimo provozní okno když `operates_24_7 = false` → varování (viz [Provozní okno](#provozní-okno))
+
+#### Provozní okno
+
+Při `operates_24_7 = false` vymezují provoz `daily_start_local` a `daily_end_local` v **lokálním čase oblasti**. Porovnání s časem segmentu se dělá po převodu `start_time` / `end_time` do časové zóny oblasti.
+
+| Vztah hodnot | Význam | Segment je uvnitř okna, když |
+|---|---|---|
+| `daily_start_local < daily_end_local` | Běžné denní okno (`06:00`–`22:00`) | `start >= daily_start_local AND end <= daily_end_local` |
+| `daily_start_local > daily_end_local` | Okno **přes půlnoc** (`06:00`–`02:00`) | čas leží v `[daily_start_local, 24:00)` **nebo** v `[00:00, daily_end_local]` |
+| `daily_start_local = daily_end_local` | Nejednoznačné (nula hodin, nebo 24?) | Aplikace zápis odmítne — pro nepřetržitý provoz použij `operates_24_7 = true` |
+
+Rovnost obou hodnot nevynucuje DB CHECK (šlo by doplnit, ale nese riziko u importovaných dat) — hlídá ji admin validace při zápisu.
 
 #### Katalogový dotaz — města s robotaxi
 

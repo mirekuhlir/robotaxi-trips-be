@@ -112,11 +112,31 @@ Skóre „ideální měsíc“, labely a agregace na výlet se **neukládají** 
 
 ### Teplota výletu
 
-**Zdroj pravdy:** `weather_records` (region × lokální ISO týden dle `weather_regions.timezone`) — ne segment, ne trip. Vzduchová teplota (`temp_*`) i pocitová (`feels_like_*`, vlhkost + vítr) — viz [Pocitová teplota](#pocitová-teplota).
+**Zdroj pravdy:** `weather_records` (region × lokální ISO týden dle `weather_regions.timezone`) — ne segment, ne trip. Vzduchová teplota (`temp_*`) i pocitová (`feels_like_*`, vlhkost + vítr) — viz [Pocitová teplota](#pocitová-teplota). Chybí-li pro dotčený týden záznam, teplotní cache se dopočítá z klimatického normálu — viz [Fallback na klima](#fallback-na-klima).
 
-**Trips (cache pro katalog):** Sloupce `temp_min_c` / `temp_max_c` (vzduchová) a `feels_like_min_c` / `feels_like_max_c` (pocitová) jsou agregovaná cache odvozená z počasí přes segmenty a místa — viz [Agregace na úrovni `trips`](implementation-notes.md#agregace-na-úrovni-trips). Autor výletu je nevyplňuje ručně. Konzistentní s principem „počasí odděleně od balení“ — jde o odvozeninu pro vyhledávání, ne duplikaci celého `weather_records`.
+**Trips (cache pro katalog):** Sloupce `temp_min_c` / `temp_max_c` (vzduchová) a `feels_like_min_c` / `feels_like_max_c` (pocitová) jsou agregovaná cache odvozená z počasí přes segmenty a místa — viz [Agregace na úrovni `trips`](implementation-notes.md#agregace-na-úrovni-trips). Sloupec `trips.temperature_source` říká, zda hodnoty pocházejí z týdenních dat, nebo z klimatu. Autor výletu je nevyplňuje ručně. Konzistentní s principem „počasí odděleně od balení“ — jde o odvozeninu pro vyhledávání, ne duplikaci celého `weather_records`.
 
-**Katalog „teplota“ = pocitová.** Primární filtr používá `feels_like_min_c` / `feels_like_max_c` (NOT NULL povinné ve filtrovaném katalogu). Vzduchová `temp_*` zůstává pro UI (např. „3–17 °C pocitově, vzduch 5–18 °C“) a volitelný sekundární filtr. `NULL` u `feels_like_*` znamená, že výlet nemá vyřešitelné počasí (chybí `weather_region_id` nebo záznam pro dotčené týdny) — při chybějící pocitové v záznamu agregace fallbackuje na vzduchovou stejného směru, takže cache pocitové se obvykle vyplní i ze starších dat bez vlhkosti.
+**Katalog „teplota“ = pocitová.** Primární filtr používá `feels_like_min_c` / `feels_like_max_c` (NOT NULL povinné ve filtrovaném katalogu). Vzduchová `temp_*` zůstává pro UI (např. „3–17 °C pocitově, vzduch 5–18 °C“) a volitelný sekundární filtr. `NULL` u `feels_like_*` znamená, že výlet nemá vyřešitelné počasí **ani klima** (chybí `weather_region_id`, nebo oblast nemá ani jeden z obou zdrojů) — při chybějící pocitové v záznamu agregace fallbackuje na vzduchovou stejného směru, takže cache pocitové se obvykle vyplní i ze starších dat bez vlhkosti.
+
+#### Fallback na klima
+
+`weather_records` pokrývají archiv a prognózu na blízké týdny. Výlet naplánovaný na příští sezónu by bez fallbacku měl teplotní cache `NULL` a z filtrovaného katalogu by úplně vypadl. Proto se pro **teplotní cache na `trips`** používá dvouúrovňový zdroj:
+
+1. Pro každou kombinaci `(weather_region_id, week_start)` z [lookupu](#lookup-počasí-podle-typu-segmentu) zkusit `weather_records`.
+2. Chybí-li záznam, načíst `weather_climate_months` pro daný region a **kalendářní měsíc, do kterého padá střed týdne** (čtvrtek daného ISO týdne v `weather_regions.timezone`).
+3. Chybí-li i klima, kombinaci přeskočit jako dosud.
+
+Hodnota `trips.temperature_source`:
+
+| Situace | `temperature_source` |
+|---|---|
+| Všechny přispívající kombinace z `weather_records` | `weather_records` |
+| Alespoň jedna kombinace dopočítaná z klimatu | `climate` |
+| Žádná vyřešitelná kombinace (všechny teplotní sloupce `NULL`) | `NULL` |
+
+**Fallback platí jen pro teplotní cache na `trips`.** Balení (`clothing_rules`) a robotaxi upozornění (`robotaxi_advisory_rules`) se dál vyhodnocují **výhradně proti `weather_records`** — měsíční normál nenese `visibility_avg_m`, rychlost větru ani denní variabilitu, takže by generoval nepřesná doporučení pro konkrétní termín. Přepočet teplotní cache tedy může doplnit klima i pro výlet, jehož balení zůstane prázdné.
+
+FE může u `temperature_source = 'climate'` zobrazit teplotu jako orientační („dlouhodobý průměr pro dané období“) místo prognózy.
 
 **Omezení v1:** týdenní granularita uvnitř týdne — víkend v jedné oblasti sdílí jeden týdenní souhrn; katalog nerozliší páteční vs. sobotní počasí bez `weather_records_daily` (backlog v2). Segment protínající hranici lokálního ISO týdne načítá **oba** dotčené týdny (viz lookup níže).
 
@@ -187,7 +207,7 @@ Kanonický algoritmus pro teplotu, balení i zobrazení v itineráři:
 | `transit` | `start_place_id.weather_region_id`; pokud `end_place_id IS NOT NULL`, i `end_place_id.weather_region_id` — každá kombinace region × protínající týden se vyhodnotí zvlášť (pro oblečení i agregaci teploty) |
 | `activity` | `start_place_id.weather_region_id`; pokud `end_place_id IS NOT NULL`, i `end_place_id.weather_region_id` — každá kombinace region × protínající týden se vyhodnotí zvlášť (pro oblečení i agregaci teploty) |
 
-3. Chybí `weather_region_id` nebo záznam pro daný týden → danou kombinaci přeskočit (weather-based pravidla / agregace teploty).
+3. Chybí `weather_region_id` → danou kombinaci přeskočit. Chybí `weather_records` pro daný týden → pro weather-based pravidla (balení, robotaxi upozornění) kombinaci přeskočit; pro **agregaci teploty na `trips`** se nejdřív zkusí klimatický normál (viz [Fallback na klima](#fallback-na-klima)) a teprve pak se kombinace přeskočí.
 4. Z každého načteného záznamu spočítat efektivní teploty pro agregaci na `trips` i pro `clothing_rules`:
    - **Vzduchová:** `temp_min_c` / `temp_max_c`; pokud chybí (`NULL`), fallback na `temp_avg_c` (NOT NULL) pro daný směr.
    - **Pocitová:** `feels_like_min_c` / `feels_like_max_c`; pokud chybí, fallback na `feels_like_avg_c`; pokud chybí i ta, fallback na **efektivní vzduchovou** stejného směru (min → efektivní `temp_min`, max → efektivní `temp_max`, avg → `temp_avg_c`). Pravidlo nikdy nevyhodnocuje teplotní podmínku proti `NULL`.
@@ -239,17 +259,17 @@ Pokud `places.weather_region_id IS NULL`, weather-based podmínky v `clothing_ru
 
 #### `sky_condition`
 
-Referenční popisy níže patří do FE locale souborů, ne do PostgreSQL.
+Referenční popisy níže patří do FE locale souborů, ne do PostgreSQL. Pořadí deklarace enumu odpovídá **rostoucí zataženosti** — `MAX()` tedy vrací nejzataženější hodnotu. `variable` je záměrně uprostřed škály: proměnlivý týden není horší než souvisle zatažený, takže nesmí v agregaci přebít `overcast`.
 
 | Hodnota | FE i18n (příklad) |
 |---|---|
 | `clear` | Jasno — bez oblačnosti |
 | `mostly_sunny` | Převážně slunečno |
 | `partly_cloudy` | Polojasno — střídání slunce a mraků |
+| `variable` | Proměnlivé oblačno během týdne |
 | `mostly_cloudy` | Převážně oblačno |
 | `cloudy` | Oblačno |
 | `overcast` | Zataženo — souvislá oblačnost |
-| `variable` | Proměnlivé oblačno během týdne |
 
 #### `wind_force`
 
@@ -286,6 +306,8 @@ Data `weather_records` lze plnit z externího API (Open-Meteo, Visual Crossing a
 **Zdroj pravdy:** `weather_climate_months` (region × kalendářní měsíc 1–12) — ne `weather_records`, ne segment, ne trip.
 
 Účel: na detailu výletu (UI blok „Kdy jet“) ukázat přehled typického počasí a systémové vhodnosti měsíců. Konkrétní termín výletu a balení dál řeší týdenní `weather_records`.
+
+Druhé použití: klima je **fallback pro teplotní cache** na `trips`, když pro dotčené týdny neexistuje týdenní záznam — viz [Fallback na klima](#fallback-na-klima). Skóre ani `suitability` se tím neperzistují, přenáší se jen teplotní metriky.
 
 ##### Plnění dat
 
@@ -341,7 +363,7 @@ Na `trips` **není** cache klimatu ani skóre — spočítá se při čtení det
       - `humidity_avg_pct` = `AVG` (NULL ignorovat; pokud všechny NULL → NULL)
       - `rain_mm` = `MAX`, `rainy_days` = `MAX`, `fog_days` = `MAX`
       - `sunshine_hours` = `MIN` (NULL ignorovat; pokud všechny NULL → NULL)
-      - `precipitation_intensity`, `wind_force`, `fog_condition`, `sky_condition` = hodnota s **nejvyšším pořadím v deklaraci enumu** (stejná filozofie jako `MAX` u `segment_difficulty` — pozdější hodnota = horší / intenzivnější)
+      - `precipitation_intensity`, `wind_force`, `fog_condition`, `sky_condition` = hodnota s **nejvyšším pořadím v deklaraci enumu** (stejná filozofie jako `MAX` u `segment_difficulty` — pozdější hodnota = horší / intenzivnější). U `sky_condition` je pořadí **rostoucí zataženost** (`clear` … `overcast`) a `variable` leží uprostřed škály mezi `partly_cloudy` a `mostly_cloudy` — jinak by proměnlivý region přebil zatažený a měsíc by unikl penalizaci za `overcast` / `cloudy`.
    4. Na agregovaném měsíčním řádku spočítat skóre a `suitability` dle tabulky výše (teplotní pásmo na pocitové s fallbackem na vzduchovou).
 3. Chybí-li klima pro všechny regiony výletu ve všech měsících → prázdné `months` / UI skryje blok „Kdy jet“.
 
@@ -371,7 +393,7 @@ Na `trips` **není** cache klimatu ani skóre — spočítá se při čtení det
 ##### Mimo scope v1
 
 - Preference uživatele (vlastní teplotní pásmo)
-- Cache na `trips` / katalogový filtr „výlety ideální v květnu“
+- Cache **skóre / `suitability`** na `trips` a katalogový filtr „výlety ideální v květnu“ (teplotní cache z klimatu je něco jiného — viz [Fallback na klima](#fallback-na-klima))
 - Denní klimatická granularita (souvisí s backlogem `weather_records_daily`)
 - Ruční override ideálních měsíců autorem výletu
 - Vlastní korekce vlezlé zimy (*damp cold*) nad běžným *apparent temperature*
