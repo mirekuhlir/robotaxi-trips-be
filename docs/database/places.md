@@ -48,6 +48,9 @@ Pravidla zápisu a agregace uživatelských recenzí (trip i place) — viz [Rec
 | `phone_calling_code` | VARCHAR, nullable | Mezinárodní telefonní předvolba bez `+` (např. `420`, `1`, `43`) — **ne** ISO `country_code`; jen číslice, typicky 1–3 znaky |
 | `telephone` | VARCHAR, nullable | Národní / účastnické číslo bez předvolby (např. `222111222`); FE skládá zobrazení `+{phone_calling_code} {telephone}` |
 | `accepted_payments` | place_accepted_payments, nullable | Jak se na místě platí: `card` / `cash` / `card_and_cash`; `NULL` = neznámé / nezadáno — UI nic nezobrazí. Bez stavu „nebere nic“ (v1); bezplatné / předplacené místo nech `NULL` nebo doplň později. Žádná agregace na `trips`, žádný katalog / junction. |
+| `robotaxi_access` | place_robotaxi_access, nullable | Last-mile dostupnost robotaxi k tomuto POI: `direct` / `via_access_point` / `not_accessible`; `NULL` = neznámé / nezadáno — UI nic nezobrazí. Nezávislé na pokrytí města v `provider_service_areas` (viz [Servisní oblasti](robotaxi.md#servisní-oblasti-providerů)). Kurátorovaný údaj, ne agregace. |
+| `robotaxi_access_place_id` | UUID, FK → places, nullable | Doporučený konec jízdy robotaxi (konec silnice / dropoff / trailhead); ON DELETE SET NULL. Povinné jen u `robotaxi_access = via_access_point`; jinak `NULL`. Nesmí odkazovat na sebe. |
+| `robotaxi_approach_walk_meters` | INTEGER, nullable | Pěší vzdálenost v metrech od access pointu (nebo curb u `direct`) k cíli; `NULL` nebo `0` u `direct`; u `via_access_point` povinné a `> 0`. Bez cache minut — FE si může odvodit z metrů. |
 | `rating` | NUMERIC(2, 1), nullable | **Externí** hodnocení ve stylu Google Maps (`1.0`–`5.0`) z importu / adminu — **ne** agregace z `place_reviews`; `NULL` = neznámé |
 | `review_rating_avg` | NUMERIC(2, 1), nullable | Průměrné uživatelské hodnocení místa (`1.0`–`5.0`); cache z `place_reviews.score`; ne ručně editovatelná; `NULL` = žádné recenze (`review_rating_count = 0`) |
 | `review_rating_count` | INTEGER, NOT NULL | Počet uživatelských recenzí; cache z `place_reviews`; ne ručně editovatelná; výchozí `0` |
@@ -75,6 +78,32 @@ Pravidla zápisu a agregace uživatelských recenzí (trip i place) — viz [Rec
 | `card_and_cash` | Karta i hotovost | Oba chipy, nebo jeden „Karta i hotovost“ (volba FE; DB drží jednu hodnotu) |
 
 Labely z FE i18n podle enum hodnoty + `users.locale`.
+
+**Last-mile robotaxi (`robotaxi_access`) — sémantika pro FE:**
+
+| Hodnota | Význam | UI |
+|---|---|---|
+| `NULL` | Neznámé / nezadáno | Žádný last-mile blok |
+| `direct` | Robotaxi doveze k místu (vchod / curb) | Chip „Robotaxi až na místo“ |
+| `via_access_point` | Robotaxi jen k přístupovému bodu, dál pěšky | „Dropoff + chůze X m“ (X = `robotaxi_approach_walk_meters`); odkaz na `robotaxi_access_place_id` |
+| `not_accessible` | Robotaxi k místu smysluplně nedoveze | Chip „Bez robotaxi — jiný přístup“ |
+
+Labely z FE i18n podle enum hodnoty + `users.locale`. Minuty chůze FE neukládá do DB — volitelně odvodí z metrů.
+
+**Invarianty last-mile** (DB CHECK + aplikační validace):
+
+| `robotaxi_access` | `robotaxi_access_place_id` | `robotaxi_approach_walk_meters` |
+|---|---|---|
+| `NULL` | `NULL` | `NULL` |
+| `direct` | `NULL` | `NULL` nebo `0` |
+| `via_access_point` | NOT NULL, `≠ places.id` | NOT NULL, `> 0` |
+| `not_accessible` | `NULL` | `NULL` |
+
+Aplikace soft-validuje, že access place má kategorii `robotaxi_pickup_zone` nebo `parking_lot` (stejný styl jako zóny v `transit_details`).
+
+FK `robotaxi_access_place_id` má `ON DELETE SET NULL`. Smazání access place při stále nastaveném `via_access_point` poruší CHECK — před smazáním přepoj nebo vynuluj last-mile na závislých místech (stejně jako RESTRICT u segmentů).
+
+**Vztah k plánování segmentů:** při `direct` typicky jeden `transit` + `robotaxi` s `end_place_id` = cílové místo. Při `via_access_point` typicky `transit` + `robotaxi` na `robotaxi_access_place_id` a následně `transit` + `walk` k cíli (`distance_meters` ≈ `robotaxi_approach_walk_meters`). Schema segmenty negeneruje — viz [Skladba last-mile](segments.md#skladba-last-mile-podle-placesrobotaxi_access).
 
 ### `place_reviews`
 
@@ -135,7 +164,7 @@ ON CONFLICT (external_source, external_place_id) DO UPDATE SET
   updated_at = now();
 ```
 
-- Import **nikdy** nepřepisuje `review_rating_avg` / `review_rating_count` (cache z UGC `place_reviews`), `weather_region_id` (ruční / admin přiřazení) ani `category_id`, pokud ho admin ručně změnil.
+- Import **nikdy** nepřepisuje `review_rating_avg` / `review_rating_count` (cache z UGC `place_reviews`), `weather_region_id` (ruční / admin přiřazení), last-mile pole (`robotaxi_access`, `robotaxi_access_place_id`, `robotaxi_approach_walk_meters` — kurátorovaná admin data) ani `category_id`, pokud ho admin ručně změnil.
 - `external_source` je volný slug zdroje, ne enum — přidání dalšího poskytovatele nevyžaduje migraci typu.
 - Ručně založené místo lze později „adoptovat“ doplněním obou polí; kolizi s již importovaným místem zachytí unique index.
 

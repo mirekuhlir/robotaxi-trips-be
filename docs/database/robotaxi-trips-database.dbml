@@ -164,6 +164,12 @@ Enum place_accepted_payments {
   card_and_cash [note: 'Karta i hotovost']
 }
 
+Enum place_robotaxi_access {
+  direct [note: 'Robotaxi doveze k místu (vchod / curb)']
+  via_access_point [note: 'Robotaxi jen k přístupovému bodu; dál pěšky — vyžaduje robotaxi_access_place_id + walk_meters > 0']
+  not_accessible [note: 'Robotaxi k místu smysluplně nedoveze']
+}
+
 // ─── Uživatelé a výlety ──────────────────────────────────────
 
 TableGroup core_trips {
@@ -387,6 +393,9 @@ Table places {
   phone_calling_code varchar [note: 'Mezinárodní předvolba bez +; CHECK IS NULL OR ~ ^[0-9]{1,3}$; ne ISO country_code']
   telephone varchar [note: 'Číslo bez předvolby; FE skládá +{phone_calling_code} {telephone}']
   accepted_payments place_accepted_payments [note: 'NULL = neznámé / nezadáno — UI nic nezobrazí; žádný CHECK ani index navíc']
+  robotaxi_access place_robotaxi_access [note: 'NULL = neznámé; last-mile k POI — ne service area města']
+  robotaxi_access_place_id uuid [ref: > places.id, note: 'ON DELETE SET NULL; jen via_access_point; ≠ self; typicky robotaxi_pickup_zone / parking_lot']
+  robotaxi_approach_walk_meters integer [note: 'CHECK IS NULL OR >= 0; u via_access_point > 0; u direct NULL nebo 0']
   rating numeric(2,1) [note: 'Externí Google Maps–style import; CHECK IS NULL OR (rating >= 1 AND rating <= 5); NE agregace z place_reviews']
   review_rating_avg numeric(2,1) [note: 'Cache AVG(place_reviews.score); NULL při review_rating_count = 0; CHECK 1–5']
   review_rating_count integer [not null, default: 0, note: 'Cache COUNT(place_reviews); CHECK >= 0; count 0 ⇔ avg NULL']
@@ -411,7 +420,10 @@ Table places {
     country_code [name: 'idx_places_country_code', note: 'SQL: partial WHERE country_code IS NOT NULL']
     (country_code, postal_code) [name: 'idx_places_postal_code', note: 'SQL: partial WHERE country_code IS NOT NULL AND postal_code IS NOT NULL']
     review_rating_avg [name: 'idx_places_review_rating_avg']
+    robotaxi_access_place_id [name: 'idx_places_robotaxi_access_place_id', note: 'SQL: partial WHERE robotaxi_access_place_id IS NOT NULL']
   }
+
+  Note: 'Last-mile CHECK: NULL access ⇒ access_place + walk NULL; direct ⇒ access_place NULL a walk NULL|0; via_access_point ⇒ access_place NOT NULL ≠ id a walk > 0; not_accessible ⇒ access_place + walk NULL. Soft app: access place kategorie robotaxi_pickup_zone nebo parking_lot.'
 }
 
 Table place_reviews {

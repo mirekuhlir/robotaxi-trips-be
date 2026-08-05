@@ -7,7 +7,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 ## Obsah
 
 - [Users & trips](users-and-trips.md) — `users`, `trips`, členové, recenze výletů; status/visibility; Recenze
-- [Places](places.md) — kategorie, místa, přijímané platby (`accepted_payments`), recenze míst; geografické dotazy
+- [Places](places.md) — kategorie, místa, přijímané platby (`accepted_payments`), last-mile robotaxi (`robotaxi_access`), recenze míst; geografické dotazy
 - [Segments](segments.md) — segmenty, galerie, `transit_details`; sémantika, cena, věk
 - [Weather & climate](weather-and-climate.md) — oblasti, týdenní počasí, klima; teplota; geo-fallback hierarchie
 - [Packing](packing.md) — oblečení, pravidla, cache balení
@@ -36,7 +36,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 | **Auditní pole** | Každá **entitní** tabulka má `created_at TIMESTAMPTZ NOT NULL DEFAULT now()` a `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`; `updated_at` udržuje automatický trigger. Cache tabulky (`segment_packing_items`, `segment_packing_item_sources`, `trip_packing_items`, `trip_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories`) a junction tabulky `clothing_rule_*` / `robotaxi_advisory_rule_*` auditní pole nemají. |
 | **Autorský obsah segmentu** | `segments.title`, `segments.description` a galerie `segment_images` jsou autorský obsah v jazyce autora výletu — oddělený od strukturálních dat (čas, místa, cena) a neagreguje se na `trips`. |
 | **Hard delete výletů** | Výlet se maže fyzicky (`DELETE FROM trips`); CASCADE smaže `trip_members`, `trip_reviews` (+ `trip_review_media`), `trip_packing_items`, `trip_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories`, `segments`, `segment_images`, `segment_packing_items` (+ `segment_packing_item_sources`) a `transit_details`. Skrytí z katalogu řeší `status` + `visibility`. Hard delete místa (`DELETE FROM places`) CASCADE smaže `place_reviews` (+ `place_review_media`). |
-| **Lokalizace na FE** | DB ukládá stabilní slugy a enum hodnoty; přeložené labely (oblečení, cestovní požadavky, počasí, klima / suitability měsíců, náročnost, kategorie, přijímané platby místa, robotaxi provideři, upozornění) řeší frontend podle `users.locale`. UGC texty recenzí (`trip_reviews.body`, `place_reviews.body`, captiony médií) zůstávají v jazyce autora — bez systémového překladu v DB. |
+| **Lokalizace na FE** | DB ukládá stabilní slugy a enum hodnoty; přeložené labely (oblečení, cestovní požadavky, počasí, klima / suitability měsíců, náročnost, kategorie, přijímané platby místa, last-mile robotaxi access, robotaxi provideři, upozornění) řeší frontend podle `users.locale`. UGC texty recenzí (`trip_reviews.body`, `place_reviews.body`, captiony médií) zůstávají v jazyce autora — bez systémového překladu v DB. |
 
 ---
 
@@ -63,6 +63,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 | `weather_region_type` | `postal_code`, `locality`, `subdivision`, `custom` — úroveň geo oblasti pro agregaci počasí; `subdivision` = stát/kraj/provincie dle ISO 3166-2; runtime geo-fallback: postal → locality → subdivision |
 | `review_media_kind` | `image`, `video` — typ média v galerii uživatelské recenze |
 | `place_accepted_payments` | `card`, `cash`, `card_and_cash` — jak se na místě platí; na sloupci `places.accepted_payments` je `NULL` = neznámé / nezadáno |
+| `place_robotaxi_access` | `direct`, `via_access_point`, `not_accessible` — last-mile dostupnost robotaxi k POI; na sloupci `places.robotaxi_access` je `NULL` = neznámé / nezadáno; nezávislé na `provider_service_areas` |
 
 ---
 
@@ -98,6 +99,9 @@ place_categories ──< places ── (start_place_id / end_place_id on segment
                          │                                    └──< weather_climate_months
                          ├── country_code (ISO 3166-1 alpha-2)
                          ├── accepted_payments (card / cash / card_and_cash; NULL = neznámé)
+                         ├── robotaxi_access (direct / via_access_point / not_accessible; NULL = neznámé)
+                         ├── robotaxi_access_place_id → places (last-mile dropoff; SET NULL)
+                         ├── robotaxi_approach_walk_meters
                          ├── external_source / external_place_id (identita importu; partial UNIQUE)
                          ├── rating (externí Maps)
                          └── review_rating_avg / review_rating_count (cache z place_reviews)

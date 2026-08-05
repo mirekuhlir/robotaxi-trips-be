@@ -242,6 +242,8 @@ Přepočty probíhají v aplikační vrstvě (ne PostgreSQL triggerem).
 
 `provider_service_areas` zachycuje, kde který provider robotaxi provozuje. Geografie je **administrativní** (ISO kódy na úrovni locality), nezávislá na `weather_regions`.
 
+**Service area ≠ last-mile k POI.** Pokrytí města říká, že provider v lokalitě jezdí. Kam až robotaxi doveze k konkrétnímu místu a kolik zbývá pěšky řeší kurátorovaná pole na `places` (`robotaxi_access`, `robotaxi_access_place_id`, `robotaxi_approach_walk_meters`) — viz [Last-mile robotaxi](places.md#places). Obě vrstvy se doplňují; last-mile nenahrazuje matching na `provider_service_areas`.
+
 #### Matching místa na servisní oblast
 
 Pro `places` s vyplněnými `country_code`, `subdivision_code` a `locality`:

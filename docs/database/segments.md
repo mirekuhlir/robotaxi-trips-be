@@ -92,8 +92,21 @@ Primární zdroj pravdy pro typ segmentu je sloupec `segment_kind`. Aplikace ho 
 **Hraniční případy transit uzlů:**
 - `robotaxi_pickup_zone` — cíl chůze/robotaxi před nástupem; statický segment na pickup zóně (např. čekání) = `segment_kind = activity` (vzácné)
 - `airport` — cíl transit segmentu s `transport_mode = plane` (check-in, pickup)
-- `parking_lot` — cíl transit segmentu s `own_car` / `car_rental` (vyzvednutí/vrácení auta)
+- `parking_lot` — cíl transit segmentu s `own_car` / `car_rental` (vyzvednutí/vrácení auta); také typický `robotaxi_access_place_id` (konec silnice / trailhead)
 - `public_transport_terminal` — vlak, metro, autobus (letiště nepatří sem)
+
+#### Skladba last-mile podle `places.robotaxi_access`
+
+Kurátorovaná last-mile metadata na cílovém místě (viz [Places — last-mile robotaxi](places.md#places)) doporučují skladbu transit segmentů. Schema je **negeneruje** — autor / aplikace je sestaví ručně nebo z UI šablony.
+
+| `robotaxi_access` cíle | Doporučená skladba |
+|---|---|
+| `direct` | Jeden `transit` + `robotaxi` s `end_place_id` = cílové místo |
+| `via_access_point` | `transit` + `robotaxi` s `end_place_id` = `robotaxi_access_place_id`, pak `transit` + `walk` z access pointu na cíl (`distance_meters` ≈ `robotaxi_approach_walk_meters`) |
+| `not_accessible` | Robotaxi segment k cíli nedoporučovat; jiný `transport_mode` nebo chůze od jiného uzlu |
+| `NULL` | Last-mile neznámé — žádná šablona; service-area soft varování stále platí |
+
+`dropoff_zone_place_id` v `transit_details` zůstává volitelný uzel providera (kategorie `robotaxi_pickup_zone`); `robotaxi_access_place_id` na cílovém POI je kurátorovaný „konec silnice“ pro last-mile — můžou se shodovat, ale nejsou totéž.
 
 **Ubytování na více nocí:** nepoužívej jeden dlouhý `accommodation` segment přes celý pobyt, pokud by překrýval denní program. Pobyt rozděl na nepřekrývající se ubytovací úseky — typicky check-in blok, noční úseky a/nebo check-out blok podle toho, co má být v timeline vidět. Cena jedné rezervace se uloží jen jednou (např. na první ubytovací úsek) nebo se deterministicky rozdělí mezi úseky, aby `trips.total_cost_usd` a `trips.total_cost_home` nebyly nadhodnocené — split musí platit současně pro `local_price_amount`, `home_price_amount` a `price_usd`. Frontend může úseky vizuálně seskupit jako jeden hotelový pobyt; DB timeline zůstává striktně lineární. `difficulty` u ubytování je vždy `NULL`.
 
