@@ -6,7 +6,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 
 ## Obsah
 
-- [Users & trips](users-and-trips.md) — `users`, `trips`, členové, recenze výletů; status/visibility; Recenze
+- [Users & trips](users-and-trips.md) — `users`, `trips` (včetně `party_size`), členové, recenze výletů; status/visibility; Recenze
 - [Places](places.md) — kategorie, místa, přijímané platby (`accepted_payments`), last-mile robotaxi (`robotaxi_access`), recenze míst; geografické dotazy
 - [Segments](segments.md) — segmenty, galerie, `transit_details`; sémantika, cena, věk
 - [Weather & climate](weather-and-climate.md) — oblasti, týdenní počasí, klima; teplota vzduchu/pocitová; teplota mořské vody (SST); geo-fallback hierarchie
@@ -88,7 +88,7 @@ users ──< trip_members >── trips ──< segments (segment_kind) ──<
   │                         │       └── trip_travel_requirement_sources
   │                         ├── trip_reviews ──< trip_review_media
   │                         │       └── user_id (RESTRICT)
-  │                         └── home_currency, total_cost_usd, total_cost_home, total_duration_minutes,
+  │                         └── home_currency, party_size, total_cost_usd, total_cost_home, total_duration_minutes,
   │                             destination_place_id, outbound_transport_mode, recommended_age_min/max,
   │                             max_difficulty, temp_min_c/max_c, feels_like_min_c/max_c, temperature_source,
   │                             water_temp_min_c/max_c, water_temperature_source, rating_avg/rating_count,

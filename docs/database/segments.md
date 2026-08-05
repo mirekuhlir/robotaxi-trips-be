@@ -60,7 +60,7 @@ Validace v aplikaci: `image_url` musí být neprázdná HTTPS URL; max. počet o
 | `pickup_zone_place_id` | UUID, FK → places, nullable | Pickup zóna robotaxi; ON DELETE RESTRICT; aplikace validuje kategorii `robotaxi_pickup_zone`; jen u `transport_mode = robotaxi`, jinak `NULL` |
 | `dropoff_zone_place_id` | UUID, FK → places, nullable | Dropoff zóna robotaxi; ON DELETE RESTRICT; aplikace validuje kategorii `robotaxi_pickup_zone`; jen u `transport_mode = robotaxi`, jinak `NULL` |
 | `estimated_wait_minutes` | SMALLINT, nullable | Odhad čekání na přistavení vozu v minutách; `>= 0`; jen u `transport_mode = robotaxi`, jinak `NULL` |
-| `passenger_count` | SMALLINT, nullable | Počet cestujících; `>= 1`; jen u `transport_mode = robotaxi`, jinak `NULL` |
+| `passenger_count` | SMALLINT, nullable | Počet cestujících na tomto úseku; `>= 1`; jen u `transport_mode = robotaxi`, jinak `NULL`. Oddělené od `trips.party_size` (plánovaná skupina výletu) — výchozí při vytvoření = `party_size`; soft `<= party_size` a `<= seat_count` |
 | `vehicle_model_id` | UUID, FK → robotaxi_vehicle_models, nullable | Model vozu; ON DELETE RESTRICT; jen u `transport_mode = robotaxi`, jinak `NULL`; aplikace validuje shodu `vehicle_model.provider_id` s `provider_id` |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
@@ -240,11 +240,12 @@ WHERE t.status = 'published' AND t.visibility = 'public'
     OR (e.id IS NOT NULL AND e.duration_minutes <= :max_dojezd_minut)
   );
 
--- Kombinovaný filtr (cena + délka programu + věk + náročnost + pocitová teplota)
+-- Kombinovaný filtr (cena + délka programu + velikost skupiny + věk + náročnost + pocitová teplota)
 SELECT * FROM trips
 WHERE status = 'published' AND visibility = 'public'
   AND total_cost_usd <= :max_cena_usd
   AND total_duration_minutes <= :max_minut
+  AND party_size <= :max_pocet_lidi
   AND (recommended_age_min IS NULL OR recommended_age_min <= :vek)
   AND (recommended_age_max IS NULL OR recommended_age_max >= :vek)
   AND max_difficulty IS NOT NULL AND max_difficulty <= :max_narocnost
@@ -300,4 +301,5 @@ Tabulka `transit_details` existuje pouze u segmentů s `segment_kind = transit`.
 - u robotaxi: `pickup_zone_place_id` / `dropoff_zone_place_id` volitelné, ale pokud vyplněné, musí být `places` s kategorií `robotaxi_pickup_zone`
 - u robotaxi: pokud je `vehicle_model_id` vyplněné, `robotaxi_vehicle_models.provider_id` musí odpovídat `provider_id`
 - u robotaxi: pokud jsou vyplněné `passenger_count` i `vehicle_model_id`, `passenger_count <= seat_count`
+- u robotaxi: pokud je `passenger_count` vyplněné, soft `passenger_count <= trips.party_size`; chybí-li `passenger_count` při INSERT, výchozí `trips.party_size` — viz [Velikost skupiny](users-and-trips.md#velikost-skupiny)
 

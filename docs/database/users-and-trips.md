@@ -32,6 +32,7 @@
 | `status` | trip_status | Výchozí `draft`; `published` = hotový výlet viditelný dle `visibility` |
 | `visibility` | trip_visibility | Výchozí `private`; bezpečnostní hranice čtení. `private` = jen členové, `unlisted` = čitelné přes přímý UUID odkaz, `public` = katalogově viditelné při `status = published` |
 | `home_currency` | CHAR(3), NOT NULL | Měna, ve které autor chce výlet plánovat a zobrazovat rozpočet (ISO 4217 uppercase); editovatelná na detailu výletu; při vytvoření výletu výchozí z `users.home_currency`; výchozí `USD` |
+| `party_size` | SMALLINT, NOT NULL | Pro kolik lidí je výlet plánovaný; editovatelná na detailu výletu; `>= 1`; výchozí `1`. **Není** počet členů v `trip_members` ani `passenger_count` u robotaxi úseku — viz [Velikost skupiny](#velikost-skupiny) |
 | `total_cost_usd` | NUMERIC(10, 2) | Agregovaná cena v USD; cache odvozená ze segmentů (`SUM price_usd`); kanon pro veřejný katalog a filtrování napříč výlety; ne ručně editovatelná; výchozí `0` |
 | `total_cost_home` | NUMERIC(10, 2) | Agregovaná cena v `home_currency`; cache odvozená ze segmentů (`SUM home_price_amount`); pro rozpočet a zobrazení výletu autorovi; ne ručně editovatelná; výchozí `0` |
 | `total_duration_minutes` | INTEGER | Předpočítaná délka aktivit a dopravy v minutách (bez ubytování); cache odvozená ze segmentů, ne ručně editovatelná; výchozí `0`. **Není** doba dojezdu z výchozího místa — viz `destination_place_id` / filtr dojezdu |
@@ -66,11 +67,37 @@
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
 
-Při vytvoření výletu aplikace automaticky vloží tvůrce (`trips.created_by`) do `trip_members` s rolí `admin` a nastaví `trips.home_currency` z `users.home_currency` tvůrce (v téže transakci jako INSERT do `trips`). Existující admin může jmenovat další adminy; na jednom výletu může být více adminů.
+Při vytvoření výletu aplikace automaticky vloží tvůrce (`trips.created_by`) do `trip_members` s rolí `admin` a nastaví `trips.home_currency` z `users.home_currency` tvůrce (v téže transakci jako INSERT do `trips`). `party_size` výchozí `1`, pokud autor nezadá jinak. Existující admin může jmenovat další adminy; na jednom výletu může být více adminů.
 
 Admin **může** odstranit původního tvůrce z `trip_members`, pokud na výletu zůstane **alespoň jeden jiný admin**. `trips.created_by` zůstává neměnný auditní záznam bez vlivu na přístup. Invariant: na každém výletu musí být v `trip_members` **alespoň jeden admin** — aplikace validuje při DELETE člena nebo UPDATE role.
 
 Dotaz „Moje výlety“: `SELECT trip_id FROM trip_members WHERE user_id = :current_user` — bez UNION s `created_by` (tvůrce je vždy v `trip_members` při vytvoření; po odstranění z `trip_members` už výlet nevidí).
+
+### Velikost skupiny
+
+`trips.party_size` říká, **pro kolik lidí je výlet plánovaný** (autor metadata; editovatelné). Slouží zobrazení na detailu, plánování rozpočtu/kapacity a katalogovému filtru „výlety pro N lidí“.
+
+| Koncept | Kde | Význam |
+|---|---|---|
+| `party_size` | `trips` | Plánovaná velikost cestovní skupiny výletu |
+| `passenger_count` | `transit_details` | Počet cestujících **na konkrétním robotaxi úseku** (může být menší než `party_size` při rozdělení do více jízd) |
+| `trip_members` | členství | Kdo má přístup k výletu — **ne** kdo fyzicky jede |
+
+**Katalog:**
+
+```sql
+-- Přesná velikost skupiny
+SELECT * FROM trips
+WHERE status = 'published' AND visibility = 'public'
+  AND party_size = :pocet_lidi;
+
+-- Výlety pro nejvýše N lidí (např. pár hledá výlety pro 1–2)
+SELECT * FROM trips
+WHERE status = 'published' AND visibility = 'public'
+  AND party_size <= :max_pocet_lidi;
+```
+
+**Vztah k robotaxi:** při vytvoření robotaxi úseku bez explicitního `passenger_count` použij výchozí `trips.party_size`. Soft validace: `passenger_count <= party_size` (jedna jízda nemá víc lidí než plánovaná skupina). `passenger_count` dál nesmí překročit `seat_count` modelu — viz [`transit_details` — pravidla](segments.md#transit_details--pravidla).
 
 ### `trip_reviews`
 
@@ -129,7 +156,7 @@ Validace v aplikaci: `media_url` musí být neprázdná HTTPS URL; max. počet m
 | `published` | `unlisted` | ne | ano — jen čtení |
 | `published` | `public` | ano | ano — jen čtení |
 
-Veřejný katalog: `status = 'published' AND visibility = 'public'`. Do filtrovaného katalogu (s filtrem na teplotu nebo náročnost) patří jen výlety s vyplněnou cache `feels_like_min_c` / `feels_like_max_c` resp. `max_difficulty`; výlet bez těchto dat může zůstat dostupný členům nebo přes přímý odkaz podle `visibility`, ale neprojde teplotním ani náročnostním filtrem. Teplotní cache se díky [fallbacku na klima](weather-and-climate.md#fallback-na-klima) vyplní i u výletů mimo horizont prognózy, pokud mají jejich oblasti klimatické normály; `temperature_source` pak nese hodnotu `climate`. Filtr **teploty mořské vody** vyžaduje `water_temp_min_c` / `water_temp_max_c` NOT NULL — vnitrozemské výlety (bez SST) vodním filtrem neprojdou; viz [Teplota mořské vody](weather-and-climate.md#teplota-mořské-vody-sst). Filtr **dojezdu** vyžaduje vyplněnou cache `destination_place_id` + `outbound_transport_mode` a existující odhad v `travel_time_estimates` (nebo stejné místo jako origin) — viz [Katalogový filtr dojezdu](travel-times.md#katalogový-filtr-dojezdu). Katalog podporuje filtrování a řazení dle ceny v **USD** (`total_cost_usd` — kanon pro srovnání napříč výlety; `total_cost_home` se v katalogu nepoužívá), délky programu (`total_duration_minutes`), dojezdu z vybraného místa (`destination_place_id` + `travel_time_estimates`), věku (`recommended_age_min` / `recommended_age_max`), náročnosti (`max_difficulty`), teploty — primárně pocitové (`feels_like_min_c` / `feels_like_max_c`), volitelně vzduchové (`temp_min_c` / `temp_max_c`) — teploty mořské vody (`water_temp_min_c` / `water_temp_max_c`) a uživatelského hodnocení (`rating_avg` / `rating_count`; výlety bez recenzí mají `rating_avg = NULL`) — viz [Cena a délka výletu](segments.md#cena-a-délka-výletu), [Travel times](travel-times.md), [Teplota výletu](weather-and-climate.md#teplota-výletu), [Teplota mořské vody](weather-and-climate.md#teplota-mořské-vody-sst), [Doporučený věk a náročnost](segments.md#doporučený-věk-a-náročnost) a [Recenze](#recenze).
+Veřejný katalog: `status = 'published' AND visibility = 'public'`. Do filtrovaného katalogu (s filtrem na teplotu nebo náročnost) patří jen výlety s vyplněnou cache `feels_like_min_c` / `feels_like_max_c` resp. `max_difficulty`; výlet bez těchto dat může zůstat dostupný členům nebo přes přímý odkaz podle `visibility`, ale neprojde teplotním ani náročnostním filtrem. Teplotní cache se díky [fallbacku na klima](weather-and-climate.md#fallback-na-klima) vyplní i u výletů mimo horizont prognózy, pokud mají jejich oblasti klimatické normály; `temperature_source` pak nese hodnotu `climate`. Filtr **teploty mořské vody** vyžaduje `water_temp_min_c` / `water_temp_max_c` NOT NULL — vnitrozemské výlety (bez SST) vodním filtrem neprojdou; viz [Teplota mořské vody](weather-and-climate.md#teplota-mořské-vody-sst). Filtr **dojezdu** vyžaduje vyplněnou cache `destination_place_id` + `outbound_transport_mode` a existující odhad v `travel_time_estimates` (nebo stejné místo jako origin) — viz [Katalogový filtr dojezdu](travel-times.md#katalogový-filtr-dojezdu). Katalog podporuje filtrování a řazení dle ceny v **USD** (`total_cost_usd` — kanon pro srovnání napříč výlety; `total_cost_home` se v katalogu nepoužívá), délky programu (`total_duration_minutes`), dojezdu z vybraného místa (`destination_place_id` + `travel_time_estimates`), velikosti skupiny (`party_size`), věku (`recommended_age_min` / `recommended_age_max`), náročnosti (`max_difficulty`), teploty — primárně pocitové (`feels_like_min_c` / `feels_like_max_c`), volitelně vzduchové (`temp_min_c` / `temp_max_c`) — teploty mořské vody (`water_temp_min_c` / `water_temp_max_c`) a uživatelského hodnocení (`rating_avg` / `rating_count`; výlety bez recenzí mají `rating_avg = NULL`) — viz [Cena a délka výletu](segments.md#cena-a-délka-výletu), [Travel times](travel-times.md), [Velikost skupiny](#velikost-skupiny), [Teplota výletu](weather-and-climate.md#teplota-výletu), [Teplota mořské vody](weather-and-climate.md#teplota-mořské-vody-sst), [Doporučený věk a náročnost](segments.md#doporučený-věk-a-náročnost) a [Recenze](#recenze).
 
 **Přístup přes odkaz:** URL s `trips.id` (UUID v4) stačí bez přihlášení jen pro `visibility IN ('unlisted', 'public')`. UUID slouží jako neuhodnutelný token pro odkazové sdílení; rate-limit volitelně v aplikaci (mimo DB schéma). U `visibility = 'private'` přímý UUID odkaz bez členství nestačí.
 

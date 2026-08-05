@@ -29,6 +29,7 @@ CHECK (recommended_age_max IS NULL OR recommended_age_max BETWEEN 0 AND 120)
 CHECK (total_cost_usd >= 0)
 CHECK (total_cost_home >= 0)
 CHECK (home_currency ~ '^[A-Z]{3}$')
+CHECK (party_size >= 1)
 CHECK (total_duration_minutes >= 0)
 CHECK (recommended_age_min IS NULL OR recommended_age_max IS NULL OR recommended_age_min <= recommended_age_max)
 CHECK (recommended_age_min IS NULL OR recommended_age_min BETWEEN 0 AND 120)
@@ -346,6 +347,7 @@ Tyto invarianty PostgreSQL CHECK neřeší — vynucuj je aplikace při zápisu:
 - `pickup_zone_place_id` / `dropoff_zone_place_id` musí odkazovat na `places` s kategorií `robotaxi_pickup_zone`
 - `vehicle_model_id` musí odkazovat na model se stejným `provider_id` jako `transit_details.provider_id`
 - `passenger_count` nesmí překročit `robotaxi_vehicle_models.seat_count`, pokud je `vehicle_model_id` vyplněné
+- soft: `passenger_count` (pokud vyplněné) nesmí překročit `trips.party_size`; při vytvoření robotaxi úseku bez `passenger_count` použij výchozí `trips.party_size` — viz [Velikost skupiny](users-and-trips.md#velikost-skupiny)
 
 Produkční minimum pro nepřekrývání segmentů je DB-level exclusion constraint přes `btree_gist`:
 
@@ -372,6 +374,7 @@ ALTER TABLE segments
 | `trips` | `idx_trips_status_visibility` | Kombinovaný filtr pro katalog; pokrývá i samostatný filtr dle `status` (leading sloupec) |
 | `trips` | `idx_trips_total_cost_usd` | Řazení a filtrování dle ceny ve veřejném katalogu (USD kanon) |
 | `trips` | `idx_trips_total_cost_home` | Řazení „mých výletů“ v plánovací měně (`home_currency`); **ne** pro veřejný katalog |
+| `trips` | `idx_trips_party_size` | Filtrování katalogu dle velikosti skupiny |
 | `trips` | `idx_trips_total_duration_minutes` | Řazení a filtrování katalogu dle délky programu výletu |
 | `trips` | `idx_trips_destination_outbound` (`destination_place_id`, `outbound_transport_mode`) partial `WHERE destination_place_id IS NOT NULL` | Katalogový filtr dojezdu (join na `travel_time_estimates`) |
 | `trips` | `idx_trips_recommended_age` (`recommended_age_min`, `recommended_age_max`) | Filtrování katalogu dle věku cílové skupiny |
