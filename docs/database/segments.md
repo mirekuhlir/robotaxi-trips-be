@@ -287,7 +287,7 @@ WHERE status = 'published'
   AND max_difficulty IS NOT NULL AND max_difficulty <= :max_narocnost;
 ```
 
-Pro kombinované filtry s cenou, délkou a teplotou viz [Cena a délka výletu](#cena-a-délka-výletu) a [Teplota výletu](weather-and-climate.md#teplota-výletu).
+Pro kombinované filtry s cenou, délkou a teplotou viz [Cena a délka výletu](#cena-a-délka-výletu), [Teplota výletu](weather-and-climate.md#teplota-výletu) a [Teplota mořské vody](weather-and-climate.md#teplota-mořské-vody-sst).
 
 ### `transit_details` — pravidla
 

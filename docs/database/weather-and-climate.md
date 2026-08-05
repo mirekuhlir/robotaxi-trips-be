@@ -23,8 +23,12 @@ Oblasti typu `custom` **záměrně nemají unique constraint** (na rozdíl od pa
 | `timezone` | VARCHAR, NOT NULL | IANA časová zóna oblasti (`Europe/Prague`, `America/Los_Angeles`) pro výpočet lokálního ISO týdne počasí |
 | `center_latitude` | NUMERIC(9, 6), NOT NULL | Střed oblasti — weather API a geo fallback (`-90` až `90`) |
 | `center_longitude` | NUMERIC(9, 6), NOT NULL | Střed oblasti — weather API a geo fallback (`-180` až `180`) |
+| `marine_latitude` | NUMERIC(9, 6), nullable | Bod v moři/oceánu pro SST ingest (Open-Meteo Marine); párový s `marine_longitude` — viz [Teplota mořské vody](#teplota-mořské-vody-sst) |
+| `marine_longitude` | NUMERIC(9, 6), nullable | Bod v moři/oceánu pro SST ingest; párový s `marine_latitude` |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
+
+**Marine bod:** obě `NULL` (= oblast nemá mořskou vodu — typicky vnitrozemí) **nebo** obě vyplněné. Nepoužívej slepě `center_*` — centroid města často leží ve vnitrozemí a Marine API vrátí prázdno nebo špatnou buňku. Admin / sync job nastaví nejbližší mořskou buňku u pobřežních oblastí. SST ingest běží **jen** když je pár nastavený.
 
 **Seed data (příklad):**
 
@@ -52,6 +56,9 @@ Týdenní souhrn počasí pro danou oblast. Jeden záznam = jeden lokální kale
 | `feels_like_avg_c` | NUMERIC(4, 1), nullable | Průměrná pocitová teplota ve °C (*apparent temperature*; viz [Pocitová teplota](#pocitová-teplota)) |
 | `feels_like_min_c` | NUMERIC(4, 1), nullable | Minimální pocitová teplota ve °C |
 | `feels_like_max_c` | NUMERIC(4, 1), nullable | Maximální pocitová teplota ve °C |
+| `water_temp_avg_c` | NUMERIC(4, 1), nullable | Průměrná teplota povrchu moře/oceánu (SST) ve °C; `NULL` = oblast bez marine bodu nebo API bez dat — viz [Teplota mořské vody](#teplota-mořské-vody-sst) |
+| `water_temp_min_c` | NUMERIC(4, 1), nullable | Minimální SST ve °C za týden |
+| `water_temp_max_c` | NUMERIC(4, 1), nullable | Maximální SST ve °C za týden |
 | `sky_condition` | sky_condition | Dominantní oblačnost / sluneční charakter týdne |
 | `sunshine_hours` | NUMERIC(5, 1), nullable | Součet hodin slunečního svitu za týden |
 | `precipitation_intensity` | precipitation_intensity | Dominantní intenzita srážek (`none` = bez deště) |
@@ -89,6 +96,9 @@ Měsíční klimatický normál pro danou oblast. Jeden záznam = typický kalen
 | `feels_like_avg_c` | NUMERIC(4, 1), nullable | Typická průměrná pocitová teplota ve °C (viz [Pocitová teplota](#pocitová-teplota)) |
 | `feels_like_min_c` | NUMERIC(4, 1), nullable | Typická minimální pocitová teplota ve °C |
 | `feels_like_max_c` | NUMERIC(4, 1), nullable | Typická maximální pocitová teplota ve °C |
+| `water_temp_avg_c` | NUMERIC(4, 1), nullable | Typická průměrná teplota povrchu moře/oceánu (SST) ve °C; `NULL` u vnitrozemí — viz [Teplota mořské vody](#teplota-mořské-vody-sst) |
+| `water_temp_min_c` | NUMERIC(4, 1), nullable | Typické minimální SST ve °C |
+| `water_temp_max_c` | NUMERIC(4, 1), nullable | Typické maximální SST ve °C |
 | `sky_condition` | sky_condition, NOT NULL | Dominantní typická oblačnost / sluneční charakter měsíce |
 | `sunshine_hours` | NUMERIC(5, 1), nullable | Typický součet hodin slunečního svitu za měsíc |
 | `precipitation_intensity` | precipitation_intensity, NOT NULL | Dominantní typická intenzita srážek (`none` = bez deště) |
@@ -139,7 +149,7 @@ Hodnota `trips.temperature_source`:
 
 Bez nové enum hodnoty ve v1: geo-fallback na rodičovský týdenní záznam se počítá jako `weather_records`, ne jako samostatný zdroj. Volitelně později „coarse region“ pro UI.
 
-**Klimatický fallback platí jen pro teplotní cache na `trips`.** Balení (`clothing_rules`) a robotaxi upozornění (`robotaxi_advisory_rules`) se dál vyhodnocují **výhradně proti `weather_records`** (včetně rodičovských přes geo-fallback) — měsíční normál nenese `visibility_avg_m`, rychlost větru ani denní variabilitu, takže by generoval nepřesná doporučení pro konkrétní termín. Přepočet teplotní cache tedy může doplnit klima i pro výlet, jehož balení zůstane prázdné.
+**Klimatický fallback platí jen pro teplotní cache na `trips`** (vzduchová, pocitová i SST — viz [Teplota mořské vody](#teplota-mořské-vody-sst)). Balení (`clothing_rules`) a robotaxi upozornění (`robotaxi_advisory_rules`) se dál vyhodnocují **výhradně proti `weather_records`** (včetně rodičovských přes geo-fallback) — měsíční normál nenese `visibility_avg_m`, rychlost větru ani denní variabilitu, takže by generoval nepřesná doporučení pro konkrétní termín. Přepočet teplotní cache tedy může doplnit klima i pro výlet, jehož balení zůstane prázdné.
 
 FE může u `temperature_source = 'climate'` zobrazit teplotu jako orientační („dlouhodobý průměr pro dané období“) místo prognózy.
 
@@ -163,9 +173,44 @@ SELECT * FROM trips
 WHERE status = 'published' AND visibility = 'public'
   AND temp_min_c IS NOT NULL AND temp_min_c >= :min_vzduchova
   AND temp_max_c IS NOT NULL AND temp_max_c <= :max_vzduchova;
+
+-- Teplota mořské vody (SST): výlety, kde i nejchladnější období má vodu alespoň X °C
+SELECT * FROM trips
+WHERE status = 'published' AND visibility = 'public'
+  AND water_temp_min_c IS NOT NULL AND water_temp_min_c >= :min_voda;
 ```
 
 Pro kombinované filtry s cenou, délkou, věkem a náročností viz [Cena a délka výletu](segments.md#cena-a-délka-výletu).
+
+
+### Teplota mořské vody (SST)
+
+**Scope v1:** jen **moře / oceán** (*sea surface temperature*). Jezera, přehrady a bazény jsou mimo scope — i když kategorie `beach_waterfront` zahrnuje i jezera/nábřeží. Teplota vody se ukládá a agreguje **jen** tam, kde má `weather_regions` vyplněný párový marine bod (`marine_latitude` / `marine_longitude`).
+
+**Zdroj pravdy:** `weather_records.water_temp_*` (region × lokální ISO týden) — ne segment, ne trip. Měsíční normál v `weather_climate_months.water_temp_*` slouží pro blok „Kdy jet“ a jako fallback trip cache.
+
+**Ingest (preferovaný):**
+
+- Týdenní / forecast: [Open-Meteo Marine API](https://open-meteo.com/en/docs/marine-weather-api) — pole `sea_surface_temperature` na souřadnicích `marine_latitude` / `marine_longitude` (ne `center_*`). Agregovat na týdenní avg / min / max.
+- Měsíční klima: agregace historického SST (Marine archive / Historical API s `sea_surface_temperature`) do typického měsíce 1–12 — **ne** Open-Meteo Climate API (SST nenese).
+- Oblast bez marine bodu → `water_temp_*` zůstávají `NULL`; ingest SST se nespouští.
+
+**Trips (cache pro katalog):** `water_temp_min_c` / `water_temp_max_c` + `water_temperature_source` (stejný enum `temperature_source` jako u vzduchu). Autor nevyplňuje ručně. Agregace — viz [Agregace na úrovni `trips`](implementation-notes.md#agregace-na-úrovni-trips).
+
+**Lookup vody** (paralelní větev ke vzduchové teplotě):
+
+1. Stejné kombinace `(place.weather_region_id, week_start)` ze všech typů segmentů jako v [Lookup počasí podle typu segmentu](#lookup-počasí-podle-typu-segmentu).
+2. Geo-řetězec: první hit, kde má `weather_records` **vyplněné** `water_temp_*` (ne jen jakýkoli týdenní řádek — rodič bez SST se přeskočí, i když má vzduchová data).
+3. Chybí-li SST v celém řetězci → pro trip water cache zkusit `weather_climate_months.water_temp_*` ve stejném řetězci (měsíc středu týdne — stejné pravidlo jako [Fallback na klima](#fallback-na-klima)). První hit s vyplněnou vodou vyhrává.
+4. Efektivní min/max: `water_temp_min_c` / `water_temp_max_c`; pokud chybí, fallback na `water_temp_avg_c` pro daný směr. Kombinace bez jakékoli water hodnoty → přeskočit (nepřispívá do trip cache).
+5. Agregace: `water_temp_min_c = MIN`, `water_temp_max_c = MAX` přes deduplikované `(resolved_weather_region_id, week_start)` s dostupnou vodou.
+6. `water_temperature_source`: `weather_records` když všechny přispívající kombinace z týdenních dat; `climate` když alespoň jedna z klimatu; `NULL` když žádná.
+
+**Klimatický fallback vody platí jen pro trip water cache.** Balení a robotaxi advisories vodu ve v1 **nepoužívají**.
+
+**Katalog:** filtr „voda alespoň X °C“ vyžaduje `water_temp_min_c IS NOT NULL`. Vnitrozemský výlet (Praha) má cache `NULL` a vodním filtrem neprojde — ve veřejném katalogu bez vodního filtru zůstává viditelný.
+
+FE i18n: např. „Teplota moře“; u `water_temperature_source = 'climate'` orientační dlouhodobý průměr pro dané období.
 
 
 ### Počasí a oblasti
@@ -182,6 +227,8 @@ Počasí se neváže přímo na jednotlivé místo, ale na **oblast** (`weather_
 | **Teplota (vzduchová)** | Průměr + volitelné min/max za týden (nebo typicky za měsíc u klimatu). |
 | **Vlhkost** | Volitelná průměrná relativní vlhkost `%` (`humidity_avg_pct`) — vstup pro pocitovou teplotu. |
 | **Pocitová teplota** | Průměr + volitelné min/max (`feels_like_*`) — *apparent temperature* z teploty, vlhkosti a větru; viz [Pocitová teplota](#pocitová-teplota). |
+| **Teplota mořské vody (SST)** | Průměr + volitelné min/max (`water_temp_*`) — povrch moře/oceánu; jen u oblastí s marine bodem; viz [Teplota mořské vody](#teplota-mořské-vody-sst). |
+| **Marine bod** | `marine_latitude` / `marine_longitude` na `weather_regions` — souřadnice pro SST ingest (ne centroid města). |
 | **Oblačnost / slunce** | `sky_condition` (jasno → zataženo) + volitelně součet hodin slunečního svitu. |
 | **Déšť** | Intenzita (`precipitation_intensity`), `rain_mm` (mm vody) a počet deštivých dní (0–7 týden / 0–31 měsíc). |
 | **Vítr** | Síla (`wind_force`) + u týdenního záznamu volitelně průměrná/max rychlost a směr větru. |
@@ -222,10 +269,10 @@ Pokud rodičovský řádek v `weather_regions` neexistuje, krok přeskočit. `cu
 
 1. `weather_records` na oblasti místa
 2. `weather_records` na rodičích v řetězci (první hit)
-3. Jen pro teplotní cache na `trips`: `weather_climate_months` ve stejném geo-řetězci (viz [Fallback na klima](#fallback-na-klima))
+3. Jen pro teplotní cache na `trips` (vzduchová / pocitová / SST): `weather_climate_months` ve stejném geo-řetězci (viz [Fallback na klima](#fallback-na-klima); u vody jen řádky s vyplněnými `water_temp_*` — viz [Teplota mořské vody](#teplota-mořské-vody-sst))
 4. Jinak kombinaci přeskočit
 
-Geo-fallback na rodičovské `weather_records` platí pro **všechny** konzumenty lookupu (teplota, balení, robotaxi, itinerář). Klimatický fallback zůstává jen pro teplotu.
+Geo-fallback na rodičovské `weather_records` platí pro **všechny** konzumenty lookupu (teplota, SST, balení, robotaxi, itinerář). U SST je hit platný jen když má záznam vyplněné `water_temp_*`. Klimatický fallback zůstává jen pro teplotní cache na `trips` (vzduchová, pocitová i voda).
 
 **Deduplikace** při agregaci teploty: klíč je `(resolved_weather_region_id, week_start)` — region, ze kterého skutečně přišel záznam (ne nutně `places.weather_region_id`). LA i Santa Monica, které obě spadnou na Kalifornii pro stejný týden, se tak započítají jednou.
 
@@ -246,7 +293,8 @@ Kanonický algoritmus pro teplotu, balení i zobrazení v itineráři:
 4. Z každého načteného záznamu spočítat efektivní teploty pro agregaci na `trips` i pro `clothing_rules`:
    - **Vzduchová:** `temp_min_c` / `temp_max_c`; pokud chybí (`NULL`), fallback na `temp_avg_c` (NOT NULL) pro daný směr.
    - **Pocitová:** `feels_like_min_c` / `feels_like_max_c`; pokud chybí, fallback na `feels_like_avg_c`; pokud chybí i ta, fallback na **efektivní vzduchovou** stejného směru (min → efektivní `temp_min`, max → efektivní `temp_max`, avg → `temp_avg_c`). Pravidlo nikdy nevyhodnocuje teplotní podmínku proti `NULL`.
-   - Podmínky `clothing_rules.temp_*` matchují efektivní vzduchovou; podmínky `clothing_rules.feels_like_*` matchují efektivní pocitovou (viz priorita v [clothing_rules](packing.md#clothing_rules)).
+   - **Mořská voda (SST):** samostatná větev — viz [Teplota mořské vody](#teplota-mořské-vody-sst). Hit pro vzduch neznamená automaticky hit pro vodu; rodič bez `water_temp_*` se pro SST přeskočí. Efektivní min/max: `water_temp_*` s fallbackem na `water_temp_avg_c`.
+   - Podmínky `clothing_rules.temp_*` matchují efektivní vzduchovou; podmínky `clothing_rules.feels_like_*` matchují efektivní pocitovou (viz priorita v [clothing_rules](packing.md#clothing_rules)). Voda se v `clothing_rules` ve v1 nepoužívá.
 
 #### Pocitová teplota
 
@@ -274,7 +322,8 @@ Pocitová teplota vyjadřuje, jak teplota působí na člověka s ohledem na **v
 |---|---|
 | `trips.feels_like_min_c` / `feels_like_max_c` | Primární katalogový filtr „teplota“ |
 | `trips.temp_min_c` / `temp_max_c` | Vzduchová cache — zobrazení / sekundární filtr |
-| Skóre „Kdy jet“ | Teplotní pásmo a prahy na pocitové (fallback vzduchová) |
+| `trips.water_temp_min_c` / `water_temp_max_c` | SST cache — zobrazení / katalogový filtr „teplota vody“ |
+| Skóre „Kdy jet“ | Teplotní pásmo a prahy na pocitové (fallback vzduchová); SST skóre neovlivňuje |
 | `clothing_rules` | Seed v1 na `temp_*`; volitelné `feels_like_*` prahy mají prioritu, pokud jsou na rule vyplněné |
 
 **Mimo scope v1:** vlastní korekce vlezlé zimy (*damp cold*) nad běžným *apparent temperature*; denní granularita pocitové (`weather_records_daily`).
@@ -348,9 +397,10 @@ Druhé použití: klima je **fallback pro teplotní cache** na `trips`, když pr
 
 ##### Plnění dat
 
-- Job / admin sync per `weather_regions` z Climate / Historical API (Open-Meteo Climate API nebo ekvivalent).
+- Job / admin sync per `weather_regions` z Climate / Historical API (Open-Meteo Climate API nebo ekvivalent) pro vzduchová data.
 - Upsert všech 12 měsíců oblasti včetně `humidity_avg_pct` a `feels_like_*` (viz [Pocitová teplota](#pocitová-teplota)); po sync aktualizuj `updated_at`.
-- Chybí-li klima pro oblast, týdenní `weather_records` (balení, `trips.temp_*`, `trips.feels_like_*`) fungují dál — UI jen skryje blok „Kdy jet“, pokud výlet nemá žádné použitelné klimatické řádky.
+- SST (`water_temp_*`): samostatný sync z Marine / Historical archivu na `marine_*` souřadnicích — jen u oblastí s marine bodem; Climate API se pro vodu nepoužívá.
+- Chybí-li klima pro oblast, týdenní `weather_records` (balení, `trips.temp_*`, `trips.feels_like_*`, `trips.water_temp_*`) fungují dál — UI jen skryje blok „Kdy jet“, pokud výlet nemá žádné použitelné klimatické řádky.
 
 ##### Skóre a labely (aplikace, ne DB)
 
@@ -397,11 +447,14 @@ Na `trips` **není** cache klimatu ani skóre — spočítá se při čtení det
       - `feels_like_min_c` = `MIN` (NULL ignorovat)
       - `feels_like_max_c` = `MAX` (NULL ignorovat)
       - `feels_like_avg_c` = `AVG` (NULL ignorovat; pokud všechny NULL → NULL)
+      - `water_temp_min_c` = `MIN` (NULL ignorovat; pokud všechny NULL → NULL)
+      - `water_temp_max_c` = `MAX` (NULL ignorovat)
+      - `water_temp_avg_c` = `AVG` (NULL ignorovat; pokud všechny NULL → NULL)
       - `humidity_avg_pct` = `AVG` (NULL ignorovat; pokud všechny NULL → NULL)
       - `rain_mm` = `MAX`, `rainy_days` = `MAX`, `fog_days` = `MAX`
       - `sunshine_hours` = `MIN` (NULL ignorovat; pokud všechny NULL → NULL)
       - `precipitation_intensity`, `wind_force`, `fog_condition`, `sky_condition` = hodnota s **nejvyšším pořadím v deklaraci enumu** (stejná filozofie jako `MAX` u `segment_difficulty` — pozdější hodnota = horší / intenzivnější). U `sky_condition` je pořadí **rostoucí zataženost** (`clear` … `overcast`) a `variable` leží uprostřed škály mezi `partly_cloudy` a `mostly_cloudy` — jinak by proměnlivý region přebil zatažený a měsíc by unikl penalizaci za `overcast` / `cloudy`.
-   4. Na agregovaném měsíčním řádku spočítat skóre a `suitability` dle tabulky výše (teplotní pásmo na pocitové s fallbackem na vzduchovou).
+   4. Na agregovaném měsíčním řádku spočítat skóre a `suitability` dle tabulky výše (teplotní pásmo na pocitové s fallbackem na vzduchovou). **SST do skóre ve v1 nevstupuje** — je informativní metrika, aby se neměnilo chování vnitrozemských výletů.
 3. Chybí-li klima pro všechny regiony výletu ve všech měsících → prázdné `months` / UI skryje blok „Kdy jet“.
 
 **API kontrakt** (odpověď detailu výletu — ne tabulka v DB):
@@ -418,6 +471,9 @@ Na `trips` **není** cache klimatu ani skóre — spočítá se při čtení det
       "feels_like_avg_c": 19.0,
       "feels_like_min_c": 11.5,
       "feels_like_max_c": 25.5,
+      "water_temp_avg_c": 17.0,
+      "water_temp_min_c": 15.5,
+      "water_temp_max_c": 18.5,
       "rain_mm": 45,
       "rainy_days": 8,
       "score": 82,
@@ -427,6 +483,8 @@ Na `trips` **není** cache klimatu ani skóre — spočítá se při čtení det
 }
 ```
 
+U vnitrozemského výletu jsou `water_temp_*` v měsíční odpovědi `null` — FE blok teploty moře skryje.
+
 ##### Mimo scope v1
 
 - Preference uživatele (vlastní teplotní pásmo)
@@ -434,4 +492,7 @@ Na `trips` **není** cache klimatu ani skóre — spočítá se při čtení det
 - Denní klimatická granularita (souvisí s backlogem `weather_records_daily`)
 - Ruční override ideálních měsíců autorem výletu
 - Vlastní korekce vlezlé zimy (*damp cold*) nad běžným *apparent temperature*
+- Teplota vody jezer / bazénů (jen SST moře/oceánu)
+- Penalizace / bonus SST ve skóre „Kdy jet“
+- `clothing_rules` / robotaxi advisories podle teploty vody
 

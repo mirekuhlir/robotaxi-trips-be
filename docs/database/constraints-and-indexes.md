@@ -49,6 +49,13 @@ CHECK (
   (temperature_source IS NULL AND feels_like_min_c IS NULL AND feels_like_max_c IS NULL)
   OR (temperature_source IS NOT NULL AND feels_like_min_c IS NOT NULL AND feels_like_max_c IS NOT NULL)
 )
+CHECK (water_temp_min_c IS NULL OR water_temp_max_c IS NULL OR water_temp_min_c <= water_temp_max_c)
+CHECK (water_temp_min_c IS NULL OR water_temp_min_c BETWEEN -2 AND 40)
+CHECK (water_temp_max_c IS NULL OR water_temp_max_c BETWEEN -2 AND 40)
+CHECK (
+  (water_temperature_source IS NULL AND water_temp_min_c IS NULL AND water_temp_max_c IS NULL)
+  OR (water_temperature_source IS NOT NULL AND water_temp_min_c IS NOT NULL AND water_temp_max_c IS NOT NULL)
+)
 CHECK (
   (destination_place_id IS NULL AND outbound_transport_mode IS NULL)
   OR (destination_place_id IS NOT NULL AND outbound_transport_mode IS NOT NULL)
@@ -56,6 +63,8 @@ CHECK (
 ```
 
 `temperature_source` je vázaný na pocitovou cache: buď je vyplněný zdroj i obě meze, nebo je vše `NULL`. Vzduchová `temp_*` se plní týmž průchodem a díky fallbacku na `temp_avg_c` (NOT NULL v obou zdrojových tabulkách) je vyplněná vždy, když je vyplněná pocitová — viz [Fallback na klima](weather-and-climate.md#fallback-na-klima).
+
+`water_temperature_source` je vázaný na SST cache stejným způsobem: buď zdroj i obě meze, nebo vše `NULL` — viz [Teplota mořské vody](weather-and-climate.md#teplota-mořské-vody-sst).
 
 `destination_place_id` a `outbound_transport_mode` jsou párové: buď obě vyplněné (výlet má destinaci a režim dojezdu pro katalogový filtr), nebo obě `NULL` — viz [Cache destinace a outbound režimu](travel-times.md#cache-destinace-a-outbound-režimu-na-trips).
 
@@ -77,8 +86,13 @@ CHECK (region_type <> 'subdivision' OR subdivision_code IS NOT NULL)
 CHECK (region_type <> 'subdivision' OR (locality IS NULL AND postal_code IS NULL))
 CHECK (center_latitude BETWEEN -90 AND 90)
 CHECK (center_longitude BETWEEN -180 AND 180)
+CHECK ((marine_latitude IS NULL) = (marine_longitude IS NULL))
+CHECK (marine_latitude IS NULL OR marine_latitude BETWEEN -90 AND 90)
+CHECK (marine_longitude IS NULL OR marine_longitude BETWEEN -180 AND 180)
 CHECK (timezone <> '')
 ```
+
+Marine bod je párový: obě `NULL` (vnitrozemí / bez SST) nebo obě vyplněné — viz [Teplota mořské vody](weather-and-climate.md#teplota-mořské-vody-sst).
 
 **`places`:**
 
@@ -155,6 +169,12 @@ CHECK (feels_like_max_c IS NULL OR feels_like_max_c BETWEEN -90 AND 60)
 CHECK (feels_like_min_c IS NULL OR feels_like_max_c IS NULL OR feels_like_min_c <= feels_like_max_c)
 CHECK (feels_like_avg_c IS NULL OR feels_like_min_c IS NULL OR feels_like_avg_c >= feels_like_min_c)
 CHECK (feels_like_avg_c IS NULL OR feels_like_max_c IS NULL OR feels_like_avg_c <= feels_like_max_c)
+CHECK (water_temp_avg_c IS NULL OR water_temp_avg_c BETWEEN -2 AND 40)
+CHECK (water_temp_min_c IS NULL OR water_temp_min_c BETWEEN -2 AND 40)
+CHECK (water_temp_max_c IS NULL OR water_temp_max_c BETWEEN -2 AND 40)
+CHECK (water_temp_min_c IS NULL OR water_temp_max_c IS NULL OR water_temp_min_c <= water_temp_max_c)
+CHECK (water_temp_avg_c IS NULL OR water_temp_min_c IS NULL OR water_temp_avg_c >= water_temp_min_c)
+CHECK (water_temp_avg_c IS NULL OR water_temp_max_c IS NULL OR water_temp_avg_c <= water_temp_max_c)
 CHECK (sunshine_hours IS NULL OR (sunshine_hours >= 0 AND sunshine_hours <= 168))
 CHECK (rain_mm >= 0)
 CHECK (rainy_days BETWEEN 0 AND 7)
@@ -168,7 +188,7 @@ CHECK (precipitation_intensity <> 'none' OR (rain_mm = 0 AND rainy_days = 0))
 CHECK (fog_condition <> 'none' OR fog_days = 0)
 ```
 
-Kontroly průměru jsou **jednostranné** záměrně — `temp_avg_c` se validuje i tehdy, když je vyplněná jen jedna z mezí. Totéž platí pro `feels_like_avg_c`.
+Kontroly průměru jsou **jednostranné** záměrně — `temp_avg_c` se validuje i tehdy, když je vyplněná jen jedna z mezí. Totéž platí pro `feels_like_avg_c` a `water_temp_avg_c`.
 
 Opačný směr srážek je **povolený**: `precipitation_intensity <> 'none'` s `rain_mm = 0` a `rainy_days = 0` není chyba — mrholení pod 0,05 mm se v ingestu zaokrouhlí na `0.0`. Vynucená je jen implikace `none ⇒ nulové srážky` (a její kontrapozice). Stejně tak `fog_condition <> 'none'` s `fog_days = 0`.
 
@@ -191,6 +211,12 @@ CHECK (feels_like_max_c IS NULL OR feels_like_max_c BETWEEN -90 AND 60)
 CHECK (feels_like_min_c IS NULL OR feels_like_max_c IS NULL OR feels_like_min_c <= feels_like_max_c)
 CHECK (feels_like_avg_c IS NULL OR feels_like_min_c IS NULL OR feels_like_avg_c >= feels_like_min_c)
 CHECK (feels_like_avg_c IS NULL OR feels_like_max_c IS NULL OR feels_like_avg_c <= feels_like_max_c)
+CHECK (water_temp_avg_c IS NULL OR water_temp_avg_c BETWEEN -2 AND 40)
+CHECK (water_temp_min_c IS NULL OR water_temp_min_c BETWEEN -2 AND 40)
+CHECK (water_temp_max_c IS NULL OR water_temp_max_c BETWEEN -2 AND 40)
+CHECK (water_temp_min_c IS NULL OR water_temp_max_c IS NULL OR water_temp_min_c <= water_temp_max_c)
+CHECK (water_temp_avg_c IS NULL OR water_temp_min_c IS NULL OR water_temp_avg_c >= water_temp_min_c)
+CHECK (water_temp_avg_c IS NULL OR water_temp_max_c IS NULL OR water_temp_avg_c <= water_temp_max_c)
 CHECK (sunshine_hours IS NULL OR (sunshine_hours >= 0 AND sunshine_hours <= 744))
 CHECK (rain_mm >= 0)
 CHECK (rainy_days BETWEEN 0 AND 31)
@@ -352,6 +378,7 @@ ALTER TABLE segments
 | `trips` | `idx_trips_max_difficulty` | Filtrování a řazení katalogu dle náročnosti výletu |
 | `trips` | `idx_trips_temp` (`temp_min_c`, `temp_max_c`) | Filtrování katalogu dle vzduchové teploty (sekundární) |
 | `trips` | `idx_trips_feels_like` (`feels_like_min_c`, `feels_like_max_c`) | Primární filtrování katalogu dle pocitové teploty |
+| `trips` | `idx_trips_water_temp` (`water_temp_min_c`, `water_temp_max_c`) | Filtrování katalogu dle teploty mořské vody (SST) |
 | `trips` | `idx_trips_rating_avg` | Řazení a filtrování katalogu dle uživatelského hodnocení |
 | `trip_members` | `idx_trip_members_user_id` | „Moje výlety" pro daného uživatele |
 | `trip_reviews` | `uq_trip_reviews_trip_user` (`trip_id`, `user_id`) | Jeden hlas na uživatele a výlet |

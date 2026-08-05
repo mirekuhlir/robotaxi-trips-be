@@ -30,7 +30,7 @@ Pravidla zápisu a agregace uživatelských recenzí (trip i place) — viz [Rec
 | `robotaxi_pickup_zone` | Pickup zóny pro autonomní taxi | Typický cíl `transit` segmentu před nástupem |
 | `culture_museum` | Muzea, galerie, výstavní prostory | Odděleno od `landmark` (venkovní památky) |
 | `shopping_retail` | Obchody, nákupní centra, trhy | Aktivity mimo gastronomii |
-| `beach_waterfront` | Pláže, jezera, nábřeží, koupaliště | Jiné balení než `nature_park` (turistika) |
+| `beach_waterfront` | Pláže, jezera, nábřeží, koupaliště | Jiné balení než `nature_park` (turistika). Kategorie **není** zdroj SST — teplota mořské vody žije na `weather_regions` s marine bodem; jezera/bazény ve v1 SST nemají — viz [Teplota mořské vody](weather-and-climate.md#teplota-mořské-vody-sst) |
 | `wellness_spa` | Samostatná spa, lázně mimo hotel | Spa v hotelu = `activity` na `start_place_id` s kategorií `accommodation` |
 | `airport` | Letiště | Typický cíl `transit` segmentu s `transport_mode = plane` |
 | `parking_lot` | Parkoviště, P+R, car rental pickup | Typický cíl `transit` u `own_car` / `car_rental` |
