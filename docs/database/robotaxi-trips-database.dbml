@@ -7,7 +7,8 @@ Project robotaxitrips {
   Note: '''
     Plánování itinerářů a výletů s integrací autonomní dopravy.
     Plně relační schéma — bez JSONB.
-    Cache na trips: total_cost_usd, total_cost_home, total_duration_minutes, recommended_age_*,
+    Cache na trips: total_cost_usd, total_cost_home, total_duration_minutes,
+    destination_place_id + outbound_transport_mode (filtr dojezdu place→place), recommended_age_*,
     max_difficulty, temp_*, feels_like_*, temperature_source, rating_avg/rating_count,
     packing_computed_at + trip_packing_items (+ trip_packing_item_sources),
     travel_requirements_computed_at + trip_travel_requirements,
@@ -15,6 +16,7 @@ Project robotaxitrips {
     Cache na segmentu: segment_packing_items (+ segment_packing_item_sources), segment_robotaxi_advisories.
     Teplotní cache má fallback z weather_records na weather_climate_months; zdroj nese temperature_source.
     Cache na places: review_rating_avg/review_rating_count (UGC); places.rating = externí Maps;
+    matice travel_time_estimates (origin_place_id × destination_place_id × transport_mode) pro katalogový filtr dojezdu.
     identita importovaného místa = (external_source, external_place_id).
     Diagramový zdroj pro dbdiagram.io; SQL migrace se píšou ručně podle .md.
     CHECK, partial indexy, ON DELETE akce a exclusion constrainty jsou v DBML jen poznámkami.
@@ -220,7 +222,9 @@ Table trips {
   home_currency char(3) [not null, default: 'USD', note: 'Plánovací měna výletu; ISO 4217 uppercase; CHECK ^[A-Z]{3}$']
   total_cost_usd numeric(10,2) [not null, default: 0, note: 'Cache SUM(segments.price_usd) — kanon pro katalog']
   total_cost_home numeric(10,2) [not null, default: 0, note: 'Cache SUM(segments.home_price_amount) v home_currency']
-  total_duration_minutes integer [not null, default: 0, note: 'Cache — bez accommodation']
+  total_duration_minutes integer [not null, default: 0, note: 'Cache — bez accommodation; ne dojezd z místa']
+  destination_place_id uuid [ref: > places.id, note: 'Cache destinace výletu; ON DELETE SET NULL; párový s outbound_transport_mode']
+  outbound_transport_mode transport_mode [note: 'Cache režimu dojezdu z itineráře; CHECK párovost s destination_place_id']
   recommended_age_min smallint [note: 'Cache MAX z aktivit']
   recommended_age_max smallint [note: 'Cache MIN z aktivit']
   max_difficulty segment_difficulty [note: 'Cache MAX z aktivit']
@@ -244,12 +248,15 @@ Table trips {
     total_cost_usd [name: 'idx_trips_total_cost_usd']
     total_cost_home [name: 'idx_trips_total_cost_home', note: 'Řazení mých výletů v home měně; ne pro veřejný katalog']
     total_duration_minutes [name: 'idx_trips_total_duration_minutes']
+    (destination_place_id, outbound_transport_mode) [name: 'idx_trips_destination_outbound', note: 'SQL: partial WHERE destination_place_id IS NOT NULL']
     (recommended_age_min, recommended_age_max) [name: 'idx_trips_recommended_age']
     max_difficulty [name: 'idx_trips_max_difficulty']
     (temp_min_c, temp_max_c) [name: 'idx_trips_temp']
     (feels_like_min_c, feels_like_max_c) [name: 'idx_trips_feels_like']
     rating_avg [name: 'idx_trips_rating_avg']
   }
+
+  Note: 'CHECK: (destination_place_id IS NULL) = (outbound_transport_mode IS NULL). Filtr dojezdu — viz docs/database/travel-times.md'
 }
 
 Table trip_members {
@@ -349,6 +356,7 @@ TableGroup places_weather {
   place_review_media
   weather_records
   weather_climate_months
+  travel_time_estimates
 }
 
 Table place_categories {
@@ -424,6 +432,27 @@ Table places {
   }
 
   Note: 'Last-mile CHECK: NULL access ⇒ access_place + walk NULL; direct ⇒ access_place NULL a walk NULL|0; via_access_point ⇒ access_place NOT NULL ≠ id a walk > 0; not_accessible ⇒ access_place + walk NULL. Soft app: access place kategorie robotaxi_pickup_zone nebo parking_lot.'
+}
+
+Table travel_time_estimates {
+  id uuid [pk, default: `gen_random_uuid()`]
+  origin_place_id uuid [not null, ref: > places.id, note: 'ON DELETE CASCADE']
+  destination_place_id uuid [not null, ref: > places.id, note: 'ON DELETE CASCADE']
+  transport_mode transport_mode [not null]
+  duration_minutes integer [not null, note: 'CHECK > 0']
+  distance_meters integer [note: 'CHECK IS NULL OR >= 0']
+  source varchar [not null, note: 'Slug: routing_api / manual / estimated; ne enum']
+  computed_at timestamptz [not null, default: `now()`]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
+
+  indexes {
+    (origin_place_id, destination_place_id, transport_mode) [unique, name: 'uq_travel_time_estimates_od_mode']
+    (origin_place_id, duration_minutes) [name: 'idx_travel_time_estimates_origin_duration']
+    destination_place_id [name: 'idx_travel_time_estimates_destination']
+  }
+
+  Note: 'CHECK origin_place_id <> destination_place_id. Řídká matice place→place pro katalogový filtr dojezdu. Viz docs/database/travel-times.md'
 }
 
 Table place_reviews {

@@ -49,9 +49,15 @@ CHECK (
   (temperature_source IS NULL AND feels_like_min_c IS NULL AND feels_like_max_c IS NULL)
   OR (temperature_source IS NOT NULL AND feels_like_min_c IS NOT NULL AND feels_like_max_c IS NOT NULL)
 )
+CHECK (
+  (destination_place_id IS NULL AND outbound_transport_mode IS NULL)
+  OR (destination_place_id IS NOT NULL AND outbound_transport_mode IS NOT NULL)
+)
 ```
 
 `temperature_source` je vázaný na pocitovou cache: buď je vyplněný zdroj i obě meze, nebo je vše `NULL`. Vzduchová `temp_*` se plní týmž průchodem a díky fallbacku na `temp_avg_c` (NOT NULL v obou zdrojových tabulkách) je vyplněná vždy, když je vyplněná pocitová — viz [Fallback na klima](weather-and-climate.md#fallback-na-klima).
+
+`destination_place_id` a `outbound_transport_mode` jsou párové: buď obě vyplněné (výlet má destinaci a režim dojezdu pro katalogový filtr), nebo obě `NULL` — viz [Cache destinace a outbound režimu](travel-times.md#cache-destinace-a-outbound-režimu-na-trips).
 
 **`users`:**
 
@@ -247,6 +253,15 @@ CHECK (estimated_wait_minutes IS NULL OR estimated_wait_minutes >= 0)
 CHECK (passenger_count IS NULL OR passenger_count >= 1)
 ```
 
+**`travel_time_estimates`:**
+
+```sql
+CHECK (origin_place_id <> destination_place_id)
+CHECK (duration_minutes > 0)
+CHECK (distance_meters IS NULL OR distance_meters >= 0)
+CHECK (source <> '')
+```
+
 **`robotaxi_vehicle_models`:**
 
 ```sql
@@ -292,6 +307,7 @@ Tyto invarianty PostgreSQL CHECK neřeší — vynucuj je aplikace při zápisu:
 - `places.weather_region_id` smí odkazovat jen na `weather_regions` ve stejné zemi (`places.country_code = weather_regions.country_code`, pokud je `places.country_code` vyplněné); při ručním přiřazení validuj i jemnější shodu podle typu regionu (`postal_code`, `locality`, `subdivision`), pokud jsou příslušná pole na místě známá
 - u `places` prázdné řetězce `name` / `description` / `website_url` / `address` / `phone_calling_code` / `telephone` normalizuj na `NULL`; `website_url` při vyplnění musí být HTTPS URL; `phone_calling_code` jen číslice bez vedoucího `+` (1–3 znaky); `telephone` bez předvolby — FE pro `tel:` odkaz spojí číslice z obou polí; externí `rating` (Google Maps–style) volitelné, při vyplnění `1.0`–`5.0` — **ne** přepisovat z `place_reviews`
 - import míst probíhá jako upsert na `(external_source, external_place_id)`; import nesmí přepsat `review_rating_avg` / `review_rating_count`, ruční `weather_region_id` ani last-mile pole (`robotaxi_access`, `robotaxi_access_place_id`, `robotaxi_approach_walk_meters`) — viz [Import a deduplikace míst](places.md#import-a-deduplikace-míst)
+- cache `trips.destination_place_id` / `outbound_transport_mode` přepočítávej podle [Travel times](travel-times.md#cache-destinace-a-outbound-režimu-na-trips); částečný pár se neukládá (DB CHECK)
 - u `places.robotaxi_access = via_access_point` soft-validuj, že `robotaxi_access_place_id` odkazuje na místo s kategorií `robotaxi_pickup_zone` nebo `parking_lot`
 - pravidla zápisu a agregace uživatelských recenzí (`trip_reviews`, `place_reviews`, media) — viz [Recenze](users-and-trips.md#recenze)
 - při ingestu `weather_records` ověř soft konzistenci mlhy a viditelnosti proti prahům z tabulky [`fog_condition`](weather-and-climate.md#fog_condition): `none` / `haze` ⇒ `visibility_avg_m >= 2000`, `mist` ⇒ `1000`–`2000`, `fog` ⇒ pod `1000`, `dense_fog` ⇒ pod `200`. Nesoulad **neblokuje** zápis (různá API měří jinak) — loguj varování a preferuj hodnotu z primárního zdroje
@@ -330,7 +346,8 @@ ALTER TABLE segments
 | `trips` | `idx_trips_status_visibility` | Kombinovaný filtr pro katalog; pokrývá i samostatný filtr dle `status` (leading sloupec) |
 | `trips` | `idx_trips_total_cost_usd` | Řazení a filtrování dle ceny ve veřejném katalogu (USD kanon) |
 | `trips` | `idx_trips_total_cost_home` | Řazení „mých výletů“ v plánovací měně (`home_currency`); **ne** pro veřejný katalog |
-| `trips` | `idx_trips_total_duration_minutes` | Řazení a filtrování katalogu dle délky výletu |
+| `trips` | `idx_trips_total_duration_minutes` | Řazení a filtrování katalogu dle délky programu výletu |
+| `trips` | `idx_trips_destination_outbound` (`destination_place_id`, `outbound_transport_mode`) partial `WHERE destination_place_id IS NOT NULL` | Katalogový filtr dojezdu (join na `travel_time_estimates`) |
 | `trips` | `idx_trips_recommended_age` (`recommended_age_min`, `recommended_age_max`) | Filtrování katalogu dle věku cílové skupiny |
 | `trips` | `idx_trips_max_difficulty` | Filtrování a řazení katalogu dle náročnosti výletu |
 | `trips` | `idx_trips_temp` (`temp_min_c`, `temp_max_c`) | Filtrování katalogu dle vzduchové teploty (sekundární) |
@@ -403,6 +420,9 @@ ALTER TABLE segments
 | `travel_requirement_rules` | `idx_travel_requirement_rules_active` (partial, `WHERE is_active = true`) | Jen aktivní pravidla |
 | `trip_travel_requirements` | PK `(trip_id, travel_requirement_item_id)` | Agregovaná cache cestovních požadavků výletu |
 | `trip_travel_requirement_sources` | PK `(trip_id, travel_requirement_item_id, source)` + `priority` | Zdroje doporučení a jejich priority |
+| `travel_time_estimates` | `uq_travel_time_estimates_od_mode` (`origin_place_id`, `destination_place_id`, `transport_mode`) | Unikátní odhad per směr × režim |
+| `travel_time_estimates` | `idx_travel_time_estimates_origin_duration` (`origin_place_id`, `duration_minutes`) | Filtr „z místa X do N minut“ |
+| `travel_time_estimates` | `idx_travel_time_estimates_destination` (`destination_place_id`) | Lookup odhadů k destinaci |
 
 ---
 

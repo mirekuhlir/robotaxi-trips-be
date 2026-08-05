@@ -12,6 +12,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 - [Weather & climate](weather-and-climate.md) — oblasti, týdenní počasí, klima; teplota; geo-fallback hierarchie
 - [Packing](packing.md) — oblečení, pravidla, cache balení
 - [Travel requirements](travel-requirements.md) — cestovní formality
+- [Travel times](travel-times.md) — matice dojezdů place→place, katalogový filtr „z místa X do N hodin“
 - [Robotaxi](robotaxi.md) — provideři, vozidla, oblasti, advisories
 - [Constraints & indexes](constraints-and-indexes.md) — CHECK, app validace, indexy
 - [Implementation notes](implementation-notes.md) — agregace na `trips` + odkazy na doménové poznámky
@@ -28,14 +29,15 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 | **Klima měsíců odděleně od týdenního počasí** | Měsíční klimatické normály v `weather_climate_months` (typický měsíc v oblasti); týdenní prognóza/historie v `weather_records`. Skóre a label „ideální měsíc“ jsou odvozenina v aplikaci (read-time na detailu výletu) — bez cache na `trips` a bez duplikace klimatu na segmentu. Klima navíc slouží jako **fallback** pro teplotní cache katalogu, když pro dotčené týdny neexistuje týdenní záznam (`trips.temperature_source` říká, který zdroj se použil). |
 | **Geo-fallback oblastí počasí** | Hierarchie `postal_code` → `locality` → `subdivision` bez `parent_id` — odvozená z ISO polí. `places.weather_region_id` ukládá nejjemnější oblast; při chybějícím `weather_records` lookup za běhu zkusí rodiče (město → stát). Platí pro teplotu, balení i robotaxi; klimatický fallback zůstává jen pro teplotní cache. Viz [Hierarchie oblastí a geo-fallback](weather-and-climate.md#hierarchie-oblastí-a-geo-fallback). |
 | **Cestovní požadavky odděleně od balení** | Dokumenty a formality jsou trip-level cache odvozená z geografie míst (`places.country_code`), ne z počasí. UI zobrazuje dva bloky: „Co si sbalit“ (oblečení) a „Dokumenty a formality“ (cestovní požadavky). |
+| **Dojezd odděleně od délky programu** | `trips.total_duration_minutes` = délka aktivit a dopravy v itineráři. Katalogový filtr „kam za N hodin z místa X“ používá `travel_time_estimates` (place → place) a cache `trips.destination_place_id` / `outbound_transport_mode` (režim z itineráře). Doména je oddělená od `weather_regions` i robotaxi service areas — bez samostatné tabulky hubů. |
 | **Robotaxi doména odděleně** | Provideři (`robotaxi_providers`), modely vozidel, servisní oblasti a weather advisories jsou samostatná doména navázaná na `transit_details`. Cache `segment_robotaxi_advisories` / `trip_robotaxi_advisories` je oddělená od balení i cestovních požadavků. |
 | **DB constrainty + aplikační validace** | Základní invarianty (čas segmentu, ceny, rozsahy a konzistence počasí, věk), FK, partial unique indexy a nepřekrývání segmentů vynucuje PostgreSQL. Workflow pravidla a doménové cross-table validace (`segment_kind` ↔ `transit_details`, role, cache přepočty) zůstávají v aplikaci. |
 | **Tři vrstvy měny** | Segment ukládá **místní** cenu (`local_price_*` — co platíte na místě), **domácí/plánovací** přepočet (`home_price_amount` v `trips.home_currency` — volba autora výletu) a **USD kanon** (`price_usd` — srovnání a filtry veřejného katalogu). Veřejný katalog filtruje a řadí vždy podle `total_cost_usd`; rozpočet výletu zobrazuje `total_cost_home` v `home_currency`. |
-| **Denormalizace s účelem** | `trips.created_by` = audit / rychlý lookup; `trip_members` = jediný zdroj pravdy pro oprávnění. Totéž pro agregace na `trips` (`total_cost_usd`, `total_cost_home`, `total_duration_minutes`, `recommended_age_min` / `recommended_age_max`, `max_difficulty`, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c`, `temperature_source`, `rating_avg` / `rating_count`, `packing_computed_at` + `trip_packing_items`, `travel_requirements_computed_at` + `trip_travel_requirements`, `robotaxi_advisories_computed_at` + `trip_robotaxi_advisories`) a `exchange_rate_local_to_usd` / `exchange_rate_local_to_home` na segmentu; na `places` cache `review_rating_avg` / `review_rating_count` z `place_reviews` (odděleně od externího `places.rating`). Filtrovaný veřejný katalog vyžaduje u teploty a náročnosti vyplněnou cache (`feels_like_*` pro primární teplotní filtr, `max_difficulty` NOT NULL); u věku znamená `NULL` „bez limitu“. |
+| **Denormalizace s účelem** | `trips.created_by` = audit / rychlý lookup; `trip_members` = jediný zdroj pravdy pro oprávnění. Totéž pro agregace na `trips` (`total_cost_usd`, `total_cost_home`, `total_duration_minutes`, `destination_place_id` / `outbound_transport_mode`, `recommended_age_min` / `recommended_age_max`, `max_difficulty`, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c`, `temperature_source`, `rating_avg` / `rating_count`, `packing_computed_at` + `trip_packing_items`, `travel_requirements_computed_at` + `trip_travel_requirements`, `robotaxi_advisories_computed_at` + `trip_robotaxi_advisories`) a `exchange_rate_local_to_usd` / `exchange_rate_local_to_home` na segmentu; na `places` cache `review_rating_avg` / `review_rating_count` z `place_reviews` (odděleně od externího `places.rating`). Filtrovaný veřejný katalog vyžaduje u teploty a náročnosti vyplněnou cache (`feels_like_*` pro primární teplotní filtr, `max_difficulty` NOT NULL); u filtru dojezdu párovou cache destinace/režimu + odhad v `travel_time_estimates` (nebo stejné místo); u věku znamená `NULL` „bez limitu“. |
 | **UUID identifikátory** | Všechny primární klíče jsou typu `UUID` (`gen_random_uuid()`). |
 | **Auditní pole** | Každá **entitní** tabulka má `created_at TIMESTAMPTZ NOT NULL DEFAULT now()` a `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`; `updated_at` udržuje automatický trigger. Cache tabulky (`segment_packing_items`, `segment_packing_item_sources`, `trip_packing_items`, `trip_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories`) a junction tabulky `clothing_rule_*` / `robotaxi_advisory_rule_*` auditní pole nemají. |
 | **Autorský obsah segmentu** | `segments.title`, `segments.description` a galerie `segment_images` jsou autorský obsah v jazyce autora výletu — oddělený od strukturálních dat (čas, místa, cena) a neagreguje se na `trips`. |
-| **Hard delete výletů** | Výlet se maže fyzicky (`DELETE FROM trips`); CASCADE smaže `trip_members`, `trip_reviews` (+ `trip_review_media`), `trip_packing_items`, `trip_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories`, `segments`, `segment_images`, `segment_packing_items` (+ `segment_packing_item_sources`) a `transit_details`. Skrytí z katalogu řeší `status` + `visibility`. Hard delete místa (`DELETE FROM places`) CASCADE smaže `place_reviews` (+ `place_review_media`). |
+| **Hard delete výletů** | Výlet se maže fyzicky (`DELETE FROM trips`); CASCADE smaže `trip_members`, `trip_reviews` (+ `trip_review_media`), `trip_packing_items`, `trip_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories`, `segments`, `segment_images`, `segment_packing_items` (+ `segment_packing_item_sources`) a `transit_details`. Skrytí z katalogu řeší `status` + `visibility`. Hard delete místa (`DELETE FROM places`) CASCADE smaže `place_reviews` (+ `place_review_media`) a řádky `travel_time_estimates`, kde je místo origin nebo destinace; `trips.destination_place_id` se nastaví na `NULL` (SET NULL). |
 | **Lokalizace na FE** | DB ukládá stabilní slugy a enum hodnoty; přeložené labely (oblečení, cestovní požadavky, počasí, klima / suitability měsíců, náročnost, kategorie, přijímané platby místa, last-mile robotaxi access, robotaxi provideři, upozornění) řeší frontend podle `users.locale`. UGC texty recenzí (`trip_reviews.body`, `place_reviews.body`, captiony médií) zůstávají v jazyce autora — bez systémového překladu v DB. |
 
 ---
@@ -85,7 +87,8 @@ users ──< trip_members >── trips ──< segments (segment_kind) ──<
   │                         │       └── trip_travel_requirement_sources
   │                         ├── trip_reviews ──< trip_review_media
   │                         │       └── user_id (RESTRICT)
-  │                         └── home_currency, total_cost_usd, total_cost_home, total_duration_minutes, recommended_age_min/max,
+  │                         └── home_currency, total_cost_usd, total_cost_home, total_duration_minutes,
+  │                             destination_place_id, outbound_transport_mode, recommended_age_min/max,
   │                             max_difficulty, temp_min_c/max_c, feels_like_min_c/max_c, temperature_source, rating_avg/rating_count,
   │                             packing_computed_at, travel_requirements_computed_at, robotaxi_advisories_computed_at (cache)
   │
@@ -93,7 +96,7 @@ users ──< trip_members >── trips ──< segments (segment_kind) ──<
           │
           └── place_id → places
 
-place_categories ──< places ── (start_place_id / end_place_id on segments)
+place_categories ──< places ── (start_place_id / end_place_id on segments; trips.destination_place_id)
                          │
                          ├── weather_region_id → weather_regions ──< weather_records
                          │                                    └──< weather_climate_months
@@ -105,6 +108,8 @@ place_categories ──< places ── (start_place_id / end_place_id on segment
                          ├── external_source / external_place_id (identita importu; partial UNIQUE)
                          ├── rating (externí Maps)
                          └── review_rating_avg / review_rating_count (cache z place_reviews)
+
+travel_time_estimates (origin_place_id / destination_place_id × transport_mode)
 
 robotaxi_providers ──< robotaxi_vehicle_models
                  └──< provider_service_areas

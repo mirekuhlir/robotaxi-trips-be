@@ -220,12 +220,27 @@ SELECT * FROM trips
 WHERE status = 'published' AND visibility = 'public'
   AND total_cost_usd <= :max_cena_usd;
 
--- Filtrování dle max. délky (minuty)
+-- Filtrování dle max. délky programu (minuty) — ne dojezd z místa
 SELECT * FROM trips
 WHERE status = 'published' AND visibility = 'public'
   AND total_duration_minutes <= :max_minut;
 
--- Kombinovaný filtr (cena + délka + věk + náročnost + pocitová teplota)
+-- Filtrování dle dojezdu z vybraného místa — viz travel-times.md
+SELECT t.*
+FROM trips t
+LEFT JOIN travel_time_estimates e
+  ON e.destination_place_id = t.destination_place_id
+ AND e.origin_place_id = :origin_place_id
+ AND e.transport_mode = t.outbound_transport_mode
+WHERE t.status = 'published' AND t.visibility = 'public'
+  AND t.destination_place_id IS NOT NULL
+  AND t.outbound_transport_mode IS NOT NULL
+  AND (
+    t.destination_place_id = :origin_place_id
+    OR (e.id IS NOT NULL AND e.duration_minutes <= :max_dojezd_minut)
+  );
+
+-- Kombinovaný filtr (cena + délka programu + věk + náročnost + pocitová teplota)
 SELECT * FROM trips
 WHERE status = 'published' AND visibility = 'public'
   AND total_cost_usd <= :max_cena_usd
@@ -237,6 +252,8 @@ WHERE status = 'published' AND visibility = 'public'
   AND feels_like_max_c IS NOT NULL AND feels_like_max_c <= :max_teplota
 ORDER BY total_cost_usd ASC;
 ```
+
+Filtr dojezdu (origin place + max. minuty) je podrobně v [Katalogový filtr dojezdu](travel-times.md#katalogový-filtr-dojezdu); lze ho kombinovat s výše uvedenými predikáty přes `JOIN` / `LEFT JOIN` na `travel_time_estimates`.
 
 
 ### Doporučený věk a náročnost
