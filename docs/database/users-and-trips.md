@@ -17,6 +17,7 @@
 | `timezone` | VARCHAR, NOT NULL | Výchozí `UTC` |
 | `locale` | VARCHAR, NOT NULL | Výchozí `en` |
 | `home_currency` | CHAR(3), NOT NULL | Výchozí plánovací měna uživatele (ISO 4217 uppercase); při vytvoření výletu se zkopíruje do `trips.home_currency`; výchozí `USD` |
+| `home_country_code` | CHAR(2), nullable | Domácí země uživatele (ISO 3166-1 alpha-2); `NULL` = neznámé. FE používá pro automatickou nápovědu zásuvek / adaptéru — viz [Electrical standards](electrical-standards.md); budoucí auto formality (pas/vízum) — viz [Travel requirements](travel-requirements.md) |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
 
@@ -52,7 +53,7 @@
 | `rating_avg` | NUMERIC(2, 1), nullable | Průměrné uživatelské hodnocení výletu (`1.0`–`5.0`); cache z `trip_reviews.score`; ne ručně editovatelná; `NULL` = žádné recenze (`rating_count = 0`) |
 | `rating_count` | INTEGER, NOT NULL | Počet uživatelských recenzí; cache z `trip_reviews`; ne ručně editovatelná; výchozí `0` |
 | `packing_computed_at` | TIMESTAMPTZ, nullable | Čas posledního přepočtu cache balení (`trip_packing_items`, `segment_packing_items`); `NULL` = cache ještě nebyla spočítána |
-| `travel_requirements_computed_at` | TIMESTAMPTZ, nullable | Čas posledního přepočtu cache cestovních požadavků (`trip_travel_requirements`); `NULL` = cache ještě nebyla spočítána |
+| `travel_requirements_computed_at` | TIMESTAMPTZ, nullable | Čas poslední změny cache cestovních požadavků (`trip_travel_requirements`); v1 při ručním add/remove; `NULL` = cache ještě nebyla nastavena |
 | `robotaxi_advisories_computed_at` | TIMESTAMPTZ, nullable | Čas posledního přepočtu cache robotaxi upozornění (`trip_robotaxi_advisories`, `segment_robotaxi_advisories`); `NULL` = cache ještě nebyla spočítána |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |

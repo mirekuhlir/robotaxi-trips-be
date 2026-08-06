@@ -60,7 +60,7 @@ Pravidla zápisu a agregace uživatelských recenzí (trip i place) — viz [Rec
 | `weather_region_id` | UUID, FK → weather_regions, nullable | ON DELETE SET NULL |
 | `external_source` | VARCHAR, nullable | Zdroj importu (např. `google_maps`); `NULL` = místo založené ručně v adminu |
 | `external_place_id` | VARCHAR, nullable | Identifikátor místa u daného zdroje; párový s `external_source` (buď obě `NULL`, nebo obě vyplněné) |
-| `country_code` | CHAR(2), nullable | ISO 3166-1 alpha-2 (`CZ`, `AT`, …); `NULL` = neznámá země — geo pravidla cestovních požadavků se pro dané místo přeskočí |
+| `country_code` | CHAR(2), nullable | ISO 3166-1 alpha-2 (`CZ`, `AT`, …); `NULL` = neznámá země — FE lookup elektrických standardů a budoucí geo formality se pro dané místo přeskočí |
 | `postal_code` | VARCHAR, nullable | Normalizované PSČ/ZIP z geocodingu; pro auto-párování s `weather_regions` |
 | `subdivision_code` | VARCHAR, nullable | ISO 3166-2 bez prefixu země (`CA`, `20`) |
 | `subdivision_name` | VARCHAR, nullable | Lidsky čitelný název subdivize |

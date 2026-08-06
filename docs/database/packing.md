@@ -162,7 +162,7 @@ Agregovaná cache doporučeného oblečení na úrovni výletu (0..N položek). 
 
 Sledování, proč byla položka na úrovni výletu doporučena (weather vs. segment kontext). Obsah je **union `segment_packing_item_sources`** přes segmenty výletu.
 
-Na rozdíl od `trip_travel_requirement_sources` tabulka **nemá sloupec `priority`** — záměrná asymetrie: oba zdroje balení (`weather`, `segment`) se při přepočtu kompletně regenerují z `clothing_rules`, takže per-zdroj prioritu není třeba perzistovat; efektivní priorita položky je v `trip_packing_items.priority`. U cestovních požadavků naopak zdroj `manual` musí přežít přepočet geo pravidel i se svou prioritou.
+Na rozdíl od `trip_travel_requirement_sources` tabulka **nemá sloupec `priority`** — záměrná asymetrie: oba zdroje balení (`weather`, `segment`) se při přepočtu kompletně regenerují z `clothing_rules`, takže per-zdroj prioritu není třeba perzistovat; efektivní priorita položky je v `trip_packing_items.priority`. U cestovních požadavků je v1 jen `manual`; až přibudou geo pravidla, `manual` musí přežít geo přepočet i se svou prioritou.
 
 | Sloupec | Typ | Popis |
 |---|---|---|
@@ -242,7 +242,7 @@ Labely pro UI mapuje FE z i18n souborů podle `slug` a `users.locale` (fallback 
 
 Přepočty probíhají v aplikační vrstvě (ne PostgreSQL triggerem).
 
-- změna segmentů výletu → přepočet cache balení, cache robotaxi upozornění, cache cestovních požadavků, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c`, `temperature_source` a ostatních agregací na `trips`
+- změna segmentů výletu → přepočet cache balení, cache robotaxi upozornění, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c`, `temperature_source` a ostatních agregací na `trips` (cestovní požadavky v1 jen ručně — ne při změně segmentů; zásuvky FE read-time)
 - změna `weather_records` pro oblasti dotčené výletem **nebo jejich rodiče v geo-řetězci** → přepočet cache balení, cache robotaxi upozornění a `temp_*` / `feels_like_*`; aplikace musí najít dotčené výlety (segmenty s místy v dané oblasti nebo v potomcích, kteří na ni mohou spadnout × protínající lokální ISO týdny)
 - sync `weather_climate_months` pro oblast (nebo rodiče) → přepočet **jen** teplotní cache a `temperature_source` (balení klima nepoužívá — viz [Fallback na klima](weather-and-climate.md#fallback-na-klima))
 - chybějící `places.weather_region_id` u segmentů → weather-based pravidla se přeskočí; `temp_*` / `feels_like_*` cache může zůstat `NULL` → výlet mimo filtrovaný katalog dle teploty

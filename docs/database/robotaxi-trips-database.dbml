@@ -141,8 +141,8 @@ Enum packing_source {
 }
 
 Enum travel_requirement_source {
-  trip_geography
-  manual
+  trip_geography [note: 'Backlog — až budou aktivní travel_requirement_rules']
+  manual [note: 'V1: autor přidává pas/vízum ručně']
 }
 
 Enum temperature_source {
@@ -205,11 +205,13 @@ Table users {
   timezone varchar [not null, default: 'UTC']
   locale varchar [not null, default: 'en']
   home_currency char(3) [not null, default: 'USD', note: 'ISO 4217 uppercase; výchozí plánovací měna; CHECK ^[A-Z]{3}$']
+  home_country_code char(2) [note: 'ISO 3166-1 alpha-2; NULL = neznámé; FE zásuvky / budoucí formality; CHECK ^[A-Z]{2}$']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
 
   indexes {
     created_at [name: 'idx_users_created_at']
+    home_country_code [name: 'idx_users_home_country_code', note: 'SQL: partial WHERE home_country_code IS NOT NULL']
   }
 }
 
@@ -242,7 +244,7 @@ Table trips {
   rating_avg numeric(2,1) [note: 'Cache AVG(trip_reviews.score); NULL při rating_count = 0; CHECK 1–5']
   rating_count integer [not null, default: 0, note: 'Cache COUNT(trip_reviews); CHECK >= 0; count 0 ⇔ avg NULL']
   packing_computed_at timestamptz [note: 'Čas posledního přepočtu cache balení']
-  travel_requirements_computed_at timestamptz [note: 'Čas posledního přepočtu cache cestovních požadavků']
+  travel_requirements_computed_at timestamptz [note: 'Čas poslední změny cache cestovních požadavků (v1 ruční add/remove)']
   robotaxi_advisories_computed_at timestamptz [note: 'Čas posledního přepočtu cache robotaxi upozornění']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
@@ -347,7 +349,7 @@ Table trip_travel_requirement_sources {
   source travel_requirement_source [pk]
   priority smallint [not null, note: 'Priorita daného zdroje; trip_travel_requirements.priority = max přes zdroje']
 
-  Note: 'Proč byla položka doporučena: trip_geography / manual. Composite FK na trip_travel_requirements.'
+  Note: 'V1: source = manual (autor). trip_geography až s aktivními geo pravidly. Composite FK na trip_travel_requirements.'
 }
 
 Ref: trip_packing_item_sources.(trip_id, clothing_item_id) > trip_packing_items.(trip_id, clothing_item_id) [delete: cascade]
@@ -712,7 +714,47 @@ Table travel_requirement_rules {
     is_active [name: 'idx_travel_requirement_rules_active', note: 'SQL: partial WHERE is_active = true']
   }
 
-  Note: 'Pravidla na úrovni výletu — odvozena z geografie míst segmentů.'
+  Note: 'Backlog geo pravidla. V1 bez seed — pas/vízum přidává autor ručně (source = manual).'
+}
+
+// ─── Elektrické standardy ────────────────────────────────────
+
+TableGroup electrical_standards {
+  plug_types
+  country_electrical_standards
+  country_plug_types
+}
+
+Table plug_types {
+  id uuid [pk, default: `gen_random_uuid()`]
+  slug varchar [unique, not null, note: 'type_a … type_n']
+  sort_order smallint [not null, default: 0, note: 'CHECK >= 0']
+  is_active boolean [not null, default: true]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
+
+  indexes {
+    is_active [name: 'idx_plug_types_active', note: 'SQL: partial WHERE is_active = true']
+  }
+}
+
+Table country_electrical_standards {
+  country_code char(2) [pk, note: 'ISO 3166-1 alpha-2; CHECK ^[A-Z]{2}$']
+  voltage_v smallint [not null, note: 'Nominální V; CHECK > 0']
+  frequency_hz smallint [not null, note: 'CHECK IN (50, 60)']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
+
+  Note: 'Referenční katalog — FE auto zásuvky/adaptér; bez trip cache.'
+}
+
+Table country_plug_types {
+  country_code char(2) [pk, ref: > country_electrical_standards.country_code, note: 'ON DELETE CASCADE']
+  plug_type_id uuid [pk, ref: > plug_types.id, note: 'ON DELETE RESTRICT']
+
+  indexes {
+    plug_type_id [name: 'idx_country_plug_types_plug_type_id']
+  }
 }
 
 // ─── Robotaxi ──────────────────────────────────────────────────

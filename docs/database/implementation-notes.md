@@ -21,7 +21,7 @@ Sloupce `total_cost_usd`, `total_cost_home`, `total_duration_minutes`, `destinat
 - **`water_temp_min_c`** / **`water_temp_max_c`** — read-only cache **teploty mořské vody** (SST); viz [Teplota mořské vody](weather-and-climate.md#teplota-mořské-vody-sst). Stejné kombinace segmentů a týdnů jako u vzduchu, ale hit vyžaduje vyplněné `water_temp_*` na záznamu (rodič bez SST se přeskočí). Deduplikace `(resolved_weather_region_id, week_start)`. Fallback na klima jen pro řádky s `water_temp_*`. `water_temp_min_c = MIN(...)`, `water_temp_max_c = MAX(...)`. Žádný vyřešitelný SST zdroj → oba sloupce `NULL` → výlet se nezobrazí ve filtrovaném katalogu dle teploty vody.
 - **`water_temperature_source`** — read-only cache; stejná sémantika jako `temperature_source`, ale jen pro přispívající SST kombinace. Nastavuje se v témže průchodu jako `water_temp_*`.
 - **Cache balení** — přepočet podle sekce [Doporučené oblečení](packing.md#doporučené-oblečení): `DELETE` + `INSERT` do `segment_packing_items` + `segment_packing_item_sources`, agregace do `trip_packing_items` + `trip_packing_item_sources` (zdroje jako union segmentových), nastavení `trips.packing_computed_at`
-- **Cache cestovních požadavků** — přepočet podle sekce [Cestovní požadavky](travel-requirements.md#cestovní-požadavky): geo položky z `travel_requirement_rules`, merge s ručními položkami (`source = manual`), nastavení `trips.travel_requirements_computed_at`
+- **Cache cestovních požadavků** — v1 jen ruční add/remove podle [Cestovní požadavky](travel-requirements.md#cestovní-požadavky) (`source = manual`); nastavení `trips.travel_requirements_computed_at`. Geo přepočet z `travel_requirement_rules` je backlog — v1 bez seed pravidel
 - **Cache robotaxi upozornění** — přepočet podle sekce [Robotaxi upozornění](robotaxi.md#robotaxi-upozornění): `DELETE` + `INSERT` do `segment_robotaxi_advisories`, agregace do `trip_robotaxi_advisories`, nastavení `trips.robotaxi_advisories_computed_at`
 - **`rating_avg` / `rating_count`** — read-only cache z `trip_reviews`; viz [Recenze](users-and-trips.md#recenze). Žádné recenze → `rating_count = 0`, `rating_avg = NULL`.
 
@@ -91,6 +91,7 @@ U delších pobytů se ubytování rozdělí na nepřekrývající se noční/ch
 | Teplota výletu; Teplota mořské vody (SST); Počasí a oblasti | [weather-and-climate.md](weather-and-climate.md) |
 | Doporučené oblečení | [packing.md](packing.md#doporučené-oblečení) |
 | Cestovní požadavky | [travel-requirements.md](travel-requirements.md#cestovní-požadavky) |
+| Elektrické standardy (zásuvky; FE auto) | [electrical-standards.md](electrical-standards.md) |
 | Dojezd mezi městy; filtr katalogu | [travel-times.md](travel-times.md) |
 | Robotaxi upozornění; Servisní oblasti | [robotaxi.md](robotaxi.md) |
 | DB constrainty a indexy | [constraints-and-indexes.md](constraints-and-indexes.md) |

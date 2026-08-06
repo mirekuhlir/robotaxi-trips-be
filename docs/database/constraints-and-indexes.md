@@ -73,6 +73,21 @@ CHECK (
 
 ```sql
 CHECK (home_currency ~ '^[A-Z]{3}$')
+CHECK (home_country_code IS NULL OR home_country_code ~ '^[A-Z]{2}$')
+```
+
+**`plug_types`:**
+
+```sql
+CHECK (sort_order >= 0)
+```
+
+**`country_electrical_standards`:**
+
+```sql
+CHECK (country_code ~ '^[A-Z]{2}$')
+CHECK (voltage_v > 0)
+CHECK (frequency_hz IN (50, 60))
 ```
 
 **`weather_regions`:**
@@ -319,6 +334,7 @@ CHECK (sort_order >= 0)
 Tyto invarianty PostgreSQL CHECK neřeší — vynucuj je aplikace při zápisu:
 
 - `users.home_currency` a `trips.home_currency` musí být validní ISO 4217 uppercase (`^[A-Z]{3}$`)
+- `users.home_country_code` při vyplnění musí být validní ISO 3166-1 alpha-2 uppercase (`^[A-Z]{2}$`); Soft: pokud existuje řádek v `country_electrical_standards`, měl by na něj sedět (FE nápověda zásuvek jinak domácí zemi přeskočí)
 - změna `trips.home_currency` vyžaduje v jedné transakci přepočet všech segmentů výletu (`home_price_amount`, `exchange_rate_local_to_home`) a `total_cost_home`
 - u `segment_kind = accommodation` musí split ceny držet konzistenci napříč vrstvami: `SUM(local_price_amount)`, `SUM(home_price_amount)` a `SUM(price_usd)` odpovídají celkové ceně rezervace
 - segmenty jednoho výletu se modelují jako **polootevřené intervaly** `[start_time, end_time)`; produkční DB vynucuje nepřekrývání exclusion constraintem níže. Aplikace stále validuje před zápisem kvůli lepší chybové hlášce; dotyk na hranici je povolen (`end_time` segmentu A = `start_time` segmentu B není překryv); mezery mezi segmenty jsou povolené
@@ -369,6 +385,11 @@ ALTER TABLE segments
 | Tabulka | Index | Účel |
 |---|---|---|
 | `users` | `idx_users_created_at` | Řazení / paginace uživatelů |
+| `users` | `idx_users_home_country_code` (partial, `WHERE home_country_code IS NOT NULL`) | Lookup domácí země (FE zásuvky; budoucí formality) |
+| `plug_types` | `idx_plug_types_active` (partial, `WHERE is_active = true`) | Jen aktivní typy zásuvek |
+| `country_electrical_standards` | PK `country_code` | Lookup standardu země |
+| `country_plug_types` | PK `(country_code, plug_type_id)` | Typy zásuvek země; reverse lookup přes `plug_type_id` |
+| `country_plug_types` | `idx_country_plug_types_plug_type_id` | Země používající daný typ |
 | `trips` | `idx_trips_created_by` | Audit / admin dotazy na tvůrce výletu (ne „Moje výlety" — ten jde přes `trip_members`) |
 | `trips` | `idx_trips_visibility` | Filtrování dle viditelnosti |
 | `trips` | `idx_trips_status_visibility` | Kombinovaný filtr pro katalog; pokrývá i samostatný filtr dle `status` (leading sloupec) |
@@ -392,7 +413,7 @@ ALTER TABLE segments
 | `places` | `idx_places_coordinates` | Geografické dotazy (blízkost bodu) |
 | `places` | `idx_places_review_rating_avg` | Řazení a filtrování dle uživatelského hodnocení místa |
 | `places` | `idx_places_weather_region_id` | Místa v dané oblasti počasí |
-| `places` | `idx_places_country_code` (partial, `WHERE country_code IS NOT NULL`) | Filtrování / geo pravidla cestovních požadavků |
+| `places` | `idx_places_country_code` (partial, `WHERE country_code IS NOT NULL`) | Filtrování; FE lookup elektrických standardů; budoucí geo formality |
 | `places` | `idx_places_postal_code` (partial, `WHERE country_code IS NOT NULL AND postal_code IS NOT NULL`) | Auto-párování místa s `weather_regions` dle PSČ |
 | `places` | `idx_places_robotaxi_access_place_id` (partial, `WHERE robotaxi_access_place_id IS NOT NULL`) | Místa odkazující na stejný last-mile access point |
 | `place_reviews` | `uq_place_reviews_place_user` (`place_id`, `user_id`) | Jeden hlas na uživatele a místo |
