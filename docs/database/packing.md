@@ -242,10 +242,10 @@ Labely pro UI mapuje FE z i18n souborů podle `slug` a `users.locale` (fallback 
 
 Přepočty probíhají v aplikační vrstvě (ne PostgreSQL triggerem).
 
-- změna segmentů výletu → přepočet cache balení, cache robotaxi upozornění, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c`, `temperature_source` a ostatních agregací na `trips` (cestovní požadavky v1 jen ručně — ne při změně segmentů; zásuvky FE read-time)
-- změna `weather_records` pro oblasti dotčené výletem **nebo jejich rodiče v geo-řetězci** → přepočet cache balení, cache robotaxi upozornění a `temp_*` / `feels_like_*`; aplikace musí najít dotčené výlety (segmenty s místy v dané oblasti nebo v potomcích, kteří na ni mohou spadnout × protínající lokální ISO týdny)
-- sync `weather_climate_months` pro oblast (nebo rodiče) → přepočet **jen** teplotní cache a `temperature_source` (balení klima nepoužívá — viz [Fallback na klima](weather-and-climate.md#fallback-na-klima))
-- chybějící `places.weather_region_id` u segmentů → weather-based pravidla se přeskočí; `temp_*` / `feels_like_*` cache může zůstat `NULL` → výlet mimo filtrovaný katalog dle teploty
+- změna segmentů výletu → přepočet cache balení, cache robotaxi upozornění, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c`, `temperature_source`, `water_temp_min_c` / `water_temp_max_c`, `water_temperature_source` a ostatních agregací na `trips` (cestovní požadavky v1 jen ručně — ne při změně segmentů; zásuvky FE read-time)
+- změna `weather_records` pro oblasti dotčené výletem **nebo jejich rodiče v geo-řetězci** → přepočet cache balení, cache robotaxi upozornění, `temp_*` / `feels_like_*`, `temperature_source` a `water_temp_*` / `water_temperature_source`; aplikace musí najít dotčené výlety (segmenty s místy v dané oblasti nebo v potomcích, kteří na ni mohou spadnout × protínající lokální ISO týdny)
+- sync `weather_climate_months` pro oblast (nebo rodiče) → přepočet **jen** teplotní cache (`temp_*` / `feels_like_*` / `temperature_source` a `water_temp_*` / `water_temperature_source`) — balení klima nepoužívá (viz [Fallback na klima](weather-and-climate.md#fallback-na-klima))
+- chybějící `places.weather_region_id` u segmentů → weather-based pravidla se přeskočí; `temp_*` / `feels_like_*` cache může zůstat `NULL` → výlet mimo filtrovaný katalog dle teploty; `water_temp_*` stejně `NULL` bez vyřešitelné SST
 
 #### Co zůstává mimo DB
 

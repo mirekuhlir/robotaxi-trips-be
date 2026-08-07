@@ -145,29 +145,6 @@ WHERE segment_id = :segment_id
 ORDER BY sort_order, id;
 ```
 
-**Migrace (SQL návrh):**
-
-```sql
-ALTER TABLE segments
-  ADD COLUMN title VARCHAR,
-  ADD COLUMN description TEXT;
-
-CREATE TABLE segment_images (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  segment_id UUID NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
-  image_url TEXT NOT NULL,
-  caption TEXT,
-  sort_order SMALLINT NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_segment_images_segment_sort
-  ON segment_images (segment_id, sort_order);
-```
-
-(+ standardní `updated_at` trigger na `segment_images`, konzistentně s ostatními tabulkami.)
-
 ### `segment_difficulty`
 
 Referenční popisy níže patří do FE locale souborů, ne do PostgreSQL.
