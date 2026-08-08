@@ -6,7 +6,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 
 ## Obsah
 
-- [Users & trips](users-and-trips.md) — `users`, `trips` (včetně `party_size`), členové, recenze výletů; status/visibility; Recenze
+- [Users & trips](users-and-trips.md) — `users` (včetně `unit_system`), `trips` (včetně `party_size`), členové, recenze výletů; status/visibility; Recenze
 - [Places](places.md) — kategorie, místa, přijímané platby (`accepted_payments`), last-mile robotaxi (`robotaxi_access`), recenze míst; geografické dotazy
 - [Segments](segments.md) — segmenty, galerie, `transit_details`; sémantika, cena, věk
 - [Weather & climate](weather-and-climate.md) — oblasti, týdenní počasí, klima; teplota vzduchu/pocitová; teplota mořské vody (SST); geo-fallback hierarchie
@@ -46,6 +46,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 | **Hard delete výletů** | Výlet se maže fyzicky (`DELETE FROM trips`); CASCADE smaže `trip_members`, `trip_reviews` (+ `trip_review_media`), `trip_packing_items`, `trip_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories`, `segments`, `segment_images`, `segment_packing_items` (+ `segment_packing_item_sources`) a `transit_details`. Skrytí z katalogu řeší `status` + `visibility`. Před hard delete místa aplikace zamkne dotčené výlety a vynuluje/přepočítá celý pár `destination_place_id` + `outbound_transport_mode`; teprve potom DELETE nechá CASCADE odstranit recenze a odhady dojezdu. |
 | **Moderace UGC mimo v1** | `trip_reviews` a `place_reviews` jsou ve v1 po validním zápisu ihned aktivní; schéma nemá moderation status, reporty ani frontu schvalování. Moderace recenzí je explicitní produktový backlog a před jejím zavedením je nutné rozhodnout workflow i vliv skrytých recenzí na agregované ratingy. |
 | **Lokalizace na FE** | DB ukládá stabilní slugy a enum hodnoty; přeložené labely (oblečení, cestovní požadavky, typy zásuvek, počasí, klima / suitability měsíců, náročnost, kategorie, přijímané platby místa, last-mile robotaxi access, robotaxi provideři, upozornění) řeší frontend podle `users.locale`. UGC texty recenzí (`trip_reviews.body`, `place_reviews.body`, captiony médií) i `segment_images.caption` zůstávají v jazyce autora — bez systémového překladu v DB. |
+| **Kanonické SI + jednotky na FE** | Vzdálenosti (`*_meters`), teploty (`*_c`), vítr (`*_ms`) a srážky (`rain_mm`) se ukládají a vrací vždy v SI. Preference `users.unit_system` (`metric` / `imperial`) je jen pro zobrazení — veškeré přepočty (km/mi, °C/°F, m/s/mph, mm/in) provádí FE. Nekopíruje se na `trips`; filtry a packing prahy zůstávají v kanonu. |
 
 ---
 
@@ -73,6 +74,7 @@ Dokumentace je rozdělena podle domén. Diagramový zdroj: [`robotaxi-trips-data
 | `review_media_kind` | `image`, `video` — typ média v galerii uživatelské recenze |
 | `place_accepted_payments` | `card`, `cash`, `card_and_cash` — jak se na místě platí; na sloupci `places.accepted_payments` je `NULL` = neznámé / nezadáno |
 | `place_robotaxi_access` | `direct`, `via_access_point`, `not_accessible` — last-mile dostupnost robotaxi k POI; na sloupci `places.robotaxi_access` je `NULL` = neznámé / nezadáno; nezávislé na `provider_service_areas` |
+| `unit_system` | `metric`, `imperial` — preference zobrazení jednotek na `users.unit_system` (vzdálenost, teplota, vítr, srážky); DB/API vždy SI; přepočet jen FE |
 
 ---
 
@@ -83,7 +85,7 @@ users ──< trip_members >── trips ──< segments (segment_kind) ──<
   │                         │              │
   ├── created_by (RESTRICT) ┘              ├── segment_packing_items >── clothing_items
   │                         │              │       └── segment_packing_item_sources
-  │                         │              ├── segment_robotaxi_advisories >── robotaxi_advisory_items
+  ├── unit_system (metric/imperial; FE)    ├── segment_robotaxi_advisories >── robotaxi_advisory_items
   │                         │              └── transit_details (1:1) ──> robotaxi_providers
   │                         │                      ├── pickup/dropoff_zone → places
   │                         │                      └── vehicle_model_id → robotaxi_vehicle_models

@@ -50,7 +50,7 @@ Pravidla zápisu a agregace uživatelských recenzí (trip i place) — viz [Rec
 | `accepted_payments` | place_accepted_payments, nullable | Jak se na místě platí: `card` / `cash` / `card_and_cash`; `NULL` = neznámé / nezadáno — UI nic nezobrazí. Bez stavu „nebere nic“ (v1); bezplatné / předplacené místo nech `NULL` nebo doplň později. Žádná agregace na `trips`, žádný katalog / junction. |
 | `robotaxi_access` | place_robotaxi_access, nullable | Last-mile dostupnost robotaxi k tomuto POI: `direct` / `via_access_point` / `not_accessible`; `NULL` = neznámé / nezadáno — UI nic nezobrazí. Nezávislé na orientačním pokrytí města v `provider_service_areas`, které není geometrickou garancí obsluhy POI (viz [Servisní oblasti](robotaxi.md#servisní-oblasti-providerů)). Kurátorovaný údaj, ne agregace. |
 | `robotaxi_access_place_id` | UUID, FK → places, nullable | Doporučený konec jízdy robotaxi (konec silnice / dropoff / trailhead); ON DELETE SET NULL. Povinné jen u `robotaxi_access = via_access_point`; jinak `NULL`. Nesmí odkazovat na sebe. |
-| `robotaxi_approach_walk_meters` | INTEGER, nullable | Pěší vzdálenost v metrech od access pointu (nebo curb u `direct`) k cíli; `NULL` nebo `0` u `direct`; u `via_access_point` povinné a `> 0`. Bez cache minut — FE si může odvodit z metrů. |
+| `robotaxi_approach_walk_meters` | INTEGER, nullable | Pěší vzdálenost v metrech od access pointu (nebo curb u `direct`) k cíli; `NULL` nebo `0` u `direct`; u `via_access_point` povinné a `> 0`. API vždy metry; FE formátuje podle `users.unit_system` (viz [Jednotky zobrazení](users-and-trips.md#jednotky-zobrazení)). Bez cache minut — FE si může odvodit z metrů. |
 | `rating` | NUMERIC(2, 1), nullable | **Externí** hodnocení ve stylu Google Maps (`1.0`–`5.0`) z importu / adminu — **ne** agregace z `place_reviews`; `NULL` = neznámé |
 | `review_rating_avg` | NUMERIC(2, 1), nullable | Průměrné uživatelské hodnocení místa (`1.0`–`5.0`); cache z `place_reviews.score`; ne ručně editovatelná; `NULL` = žádné recenze (`review_rating_count = 0`) |
 | `review_rating_count` | INTEGER, NOT NULL | Počet uživatelských recenzí; cache z `place_reviews`; ne ručně editovatelná; výchozí `0` |
@@ -85,10 +85,10 @@ Labely z FE i18n podle enum hodnoty + `users.locale`.
 |---|---|---|
 | `NULL` | Neznámé / nezadáno | Žádný last-mile blok |
 | `direct` | Robotaxi doveze k místu (vchod / curb) | Chip „Robotaxi až na místo“ |
-| `via_access_point` | Robotaxi jen k přístupovému bodu, dál pěšky | „Dropoff + chůze X m“ (X = `robotaxi_approach_walk_meters`); odkaz na `robotaxi_access_place_id` |
+| `via_access_point` | Robotaxi jen k přístupovému bodu, dál pěšky | „Dropoff + chůze X“ — X formátuje FE z `robotaxi_approach_walk_meters` podle `users.unit_system` (např. `250 m` / `800 ft`); odkaz na `robotaxi_access_place_id` |
 | `not_accessible` | Robotaxi k místu smysluplně nedoveze | Chip „Bez robotaxi — jiný přístup“ |
 
-Labely z FE i18n podle enum hodnoty + `users.locale`. Minuty chůze FE neukládá do DB — volitelně odvodí z metrů.
+Labely z FE i18n podle enum hodnoty + `users.locale`. Vzdálenost formátuje FE podle `users.unit_system` — viz [Jednotky zobrazení](users-and-trips.md#jednotky-zobrazení). Minuty chůze FE neukládá do DB — volitelně odvodí z metrů.
 
 **Invarianty last-mile** (DB CHECK + aplikační validace):
 

@@ -49,10 +49,10 @@ Týdenní souhrn počasí pro danou oblast. Jeden záznam = jeden lokální kale
 | `id` | UUID, PK | |
 | `weather_region_id` | UUID, FK → weather_regions | ON DELETE CASCADE |
 | `week_start` | DATE | Pondělí daného týdne (lokální ISO týden dle `weather_regions.timezone`) |
-| `temp_avg_c` | NUMERIC(4, 1) | Průměrná **vzduchová** teplota ve °C |
+| `temp_avg_c` | NUMERIC(4, 1) | Průměrná **vzduchová** teplota ve °C (API vždy °C; FE dle `users.unit_system`) |
 | `temp_min_c` | NUMERIC(4, 1), nullable | Minimální vzduchová teplota ve °C |
 | `temp_max_c` | NUMERIC(4, 1), nullable | Maximální vzduchová teplota ve °C |
-| `humidity_avg_pct` | NUMERIC(4, 1), nullable | Průměrná relativní vlhkost vzduchu v % (0–100) |
+| `humidity_avg_pct` | NUMERIC(4, 1), nullable | Průměrná relativní vlhkost vzduchu v % (0–100) — bez přepočtu jednotek |
 | `feels_like_avg_c` | NUMERIC(4, 1), nullable | Průměrná pocitová teplota ve °C (*apparent temperature*; viz [Pocitová teplota](#pocitová-teplota)) |
 | `feels_like_min_c` | NUMERIC(4, 1), nullable | Minimální pocitová teplota ve °C |
 | `feels_like_max_c` | NUMERIC(4, 1), nullable | Maximální pocitová teplota ve °C |
@@ -62,15 +62,15 @@ Týdenní souhrn počasí pro danou oblast. Jeden záznam = jeden lokální kale
 | `sky_condition` | sky_condition | Dominantní oblačnost / sluneční charakter týdne |
 | `sunshine_hours` | NUMERIC(5, 1), nullable | Součet hodin slunečního svitu za týden |
 | `precipitation_intensity` | precipitation_intensity | Dominantní intenzita srážek (`none` = bez deště) |
-| `rain_mm` | NUMERIC(6, 1) | Celkový déšť za týden v mm vody (0 = bez deště); výchozí `0` |
+| `rain_mm` | NUMERIC(6, 1) | Celkový déšť za týden v mm vody (0 = bez deště); výchozí `0`. API vždy mm; FE dle `users.unit_system` (mm / in) |
 | `rainy_days` | SMALLINT | Počet deštivých dní v týdnu (0–7); výchozí `0` |
 | `wind_force` | wind_force | Dominantní síla větru za týden |
-| `wind_speed_avg_ms` | NUMERIC(4, 1), nullable | Průměrná rychlost větru v m/s |
+| `wind_speed_avg_ms` | NUMERIC(4, 1), nullable | Průměrná rychlost větru v m/s. API vždy m/s; FE dle `users.unit_system` (m/s / mph) |
 | `wind_speed_max_ms` | NUMERIC(4, 1), nullable | Maximální náraz větru v m/s |
-| `wind_direction_avg_deg` | SMALLINT, nullable | Průměrný směr větru ve stupních (0–359, 0 = sever) |
+| `wind_direction_avg_deg` | SMALLINT, nullable | Průměrný směr větru ve stupních (0–359, 0 = sever) — bez přepočtu jednotek |
 | `fog_condition` | fog_condition | Dominantní mlha / viditelnost za týden (`none` = bez mlhy) |
 | `fog_days` | SMALLINT | Počet mlhavých dní v týdnu (0–7); výchozí `0` |
-| `visibility_avg_m` | INTEGER, nullable | Průměrná viditelnost v metrech (nižší = horší kvůli mlze) |
+| `visibility_avg_m` | INTEGER, nullable | Průměrná viditelnost v metrech (nižší = horší kvůli mlze). API vždy metry; FE dle `users.unit_system` |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
 
@@ -102,7 +102,7 @@ Měsíční klimatický normál pro danou oblast. Jeden záznam = typický kalen
 | `sky_condition` | sky_condition, NOT NULL | Dominantní typická oblačnost / sluneční charakter měsíce |
 | `sunshine_hours` | NUMERIC(5, 1), nullable | Typický součet hodin slunečního svitu za měsíc |
 | `precipitation_intensity` | precipitation_intensity, NOT NULL | Dominantní typická intenzita srážek (`none` = bez deště) |
-| `rain_mm` | NUMERIC(6, 1), NOT NULL | Typický úhrn srážek za měsíc v mm vody (0 = bez deště); výchozí `0` |
+| `rain_mm` | NUMERIC(6, 1), NOT NULL | Typický úhrn srážek za měsíc v mm vody (0 = bez deště); výchozí `0`. API vždy mm; FE dle `users.unit_system` |
 | `rainy_days` | SMALLINT, NOT NULL | Typický počet deštivých dní v měsíci (0–31); výchozí `0` |
 | `wind_force` | wind_force, NOT NULL | Dominantní typická síla větru za měsíc |
 | `fog_condition` | fog_condition, NOT NULL | Dominantní typická mlha za měsíc (`none` = bez mlhy) |
@@ -224,15 +224,15 @@ Počasí se neváže přímo na jednotlivé místo, ale na **oblast** (`weather_
 | **Časová zóna** | `weather_regions.timezone` je IANA identifikátor a zdroj pravdy pro lokální ISO týden (`Europe/Prague`, `America/Los_Angeles`). |
 | **Týdenní záznam** | Jeden řádek v `weather_records` = jeden lokální ISO týden v dané oblasti. |
 | **Měsíční klima** | Jeden řádek v `weather_climate_months` = typický kalendářní měsíc (1–12) v dané oblasti — klimatický normál, ne konkrétní rok. |
-| **Teplota (vzduchová)** | Průměr + volitelné min/max za týden (nebo typicky za měsíc u klimatu). |
-| **Vlhkost** | Volitelná průměrná relativní vlhkost `%` (`humidity_avg_pct`) — vstup pro pocitovou teplotu. |
-| **Pocitová teplota** | Průměr + volitelné min/max (`feels_like_*`) — *apparent temperature* z teploty, vlhkosti a větru; viz [Pocitová teplota](#pocitová-teplota). |
-| **Teplota mořské vody (SST)** | Průměr + volitelné min/max (`water_temp_*`) — povrch moře/oceánu; jen u oblastí s marine bodem; viz [Teplota mořské vody](#teplota-mořské-vody-sst). |
+| **Teplota (vzduchová)** | Průměr + volitelné min/max za týden (nebo typicky za měsíc u klimatu). Kanon °C; FE zobrazení dle `users.unit_system` — viz [Jednotky zobrazení](users-and-trips.md#jednotky-zobrazení). |
+| **Vlhkost** | Volitelná průměrná relativní vlhkost `%` (`humidity_avg_pct`) — vstup pro pocitovou teplotu; bez přepočtu jednotek. |
+| **Pocitová teplota** | Průměr + volitelné min/max (`feels_like_*`) — *apparent temperature* z teploty, vlhkosti a větru; viz [Pocitová teplota](#pocitová-teplota). Kanon °C; FE dle `unit_system`. |
+| **Teplota mořské vody (SST)** | Průměr + volitelné min/max (`water_temp_*`) — povrch moře/oceánu; jen u oblastí s marine bodem; viz [Teplota mořské vody](#teplota-mořské-vody-sst). Kanon °C; FE dle `unit_system`. |
 | **Marine bod** | `marine_latitude` / `marine_longitude` na `weather_regions` — souřadnice pro SST ingest (ne centroid města). |
 | **Oblačnost / slunce** | `sky_condition` (jasno → zataženo) + volitelně součet hodin slunečního svitu. |
-| **Déšť** | Intenzita (`precipitation_intensity`), `rain_mm` (mm vody) a počet deštivých dní (0–7 týden / 0–31 měsíc). |
-| **Vítr** | Síla (`wind_force`) + u týdenního záznamu volitelně průměrná/max rychlost a směr větru. |
-| **Mlha** | Typ (`fog_condition`), počet mlhavých dní a u týdenního záznamu průměrná viditelnost. |
+| **Déšť** | Intenzita (`precipitation_intensity`), `rain_mm` (mm vody) a počet deštivých dní (0–7 týden / 0–31 měsíc). Kanon mm; FE dle `unit_system` (mm / in). |
+| **Vítr** | Síla (`wind_force`) + u týdenního záznamu volitelně průměrná/max rychlost (m/s) a směr větru. FE rychlost dle `unit_system` (m/s / mph). |
+| **Mlha** | Typ (`fog_condition`), počet mlhavých dní a u týdenního záznamu průměrná viditelnost (metry; FE dle `unit_system`). |
 
 #### Týdenní granularita (finální pro v1)
 
@@ -487,7 +487,7 @@ U vnitrozemského výletu jsou `water_temp_*` v měsíční odpovědi `null` —
 
 ##### Mimo scope v1
 
-- Preference uživatele (vlastní teplotní pásmo)
+- Preference uživatele (**vlastní teplotní pásmo** pro packing / skóre — ne display jednotky; zobrazení °C/°F řídí `users.unit_system`, viz [Jednotky zobrazení](users-and-trips.md#jednotky-zobrazení))
 - Cache **skóre / `suitability`** na `trips` a katalogový filtr „výlety ideální v květnu“ (teplotní cache z klimatu je něco jiného — viz [Fallback na klima](#fallback-na-klima))
 - Denní klimatická granularita (souvisí s backlogem `weather_records_daily`)
 - Ruční override ideálních měsíců autorem výletu

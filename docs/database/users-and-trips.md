@@ -16,10 +16,26 @@
 | `avatar_url` | TEXT | |
 | `timezone` | VARCHAR, NOT NULL | Výchozí `UTC` |
 | `locale` | VARCHAR, NOT NULL | Výchozí `en` |
+| `unit_system` | unit_system, NOT NULL | Systém jednotek pro zobrazení (`metric` / `imperial`); výchozí `metric`. Editovatelné v profilu / settings. Nekopíruje se na `trips` — každý prohlížeč vidí podle svého nastavení. Viz [Jednotky zobrazení](#jednotky-zobrazení) |
 | `home_currency` | CHAR(3), NOT NULL | Výchozí plánovací měna uživatele (ISO 4217 uppercase); při vytvoření výletu se zkopíruje do `trips.home_currency`; výchozí `USD` |
 | `home_country_code` | CHAR(2), nullable | Domácí země uživatele (ISO 3166-1 alpha-2); `NULL` = neznámé. FE používá pro automatickou nápovědu zásuvek / adaptéru — viz [Electrical standards](electrical-standards.md); budoucí auto formality (pas/vízum) — viz [Travel requirements](travel-requirements.md) |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
+
+#### Jednotky zobrazení
+
+DB a API ukládají a vrací **vždy kanonické SI** hodnoty. Preferenci `unit_system` čte FE a **veškeré přepočty i formátování** provádí klient — BE nepřepočítává, neformátuje labely a nevrací paralelní hodnoty (°F, mi, mph, in).
+
+| Kanon v DB / API | `metric` (FE) | `imperial` (FE) |
+|---|---|---|
+| metry (`*_meters`, `visibility_avg_m`) | `< 1000 m` → celé m; jinak km (1 desetina) | `< 0.1 mi` → celé ft; jinak mi (1 desetina) |
+| °C (`*_c` — vzduch, pocitová, SST) | °C (1 desetina) | °F (`°C × 9/5 + 32`) |
+| m/s (`wind_speed_*_ms`) | m/s (1 desetina) | mph (`m/s / 0.44704`) |
+| mm (`rain_mm`) | mm | in (`mm / 25.4`) |
+
+Konstanty: `1 mi = 1609.344 m`, `1 ft = 0.3048 m`, `1 mph = 0.44704 m/s`, `1 in = 25.4 mm`. Bez přepočtu: `%` vlhkost, směr větru ve stupních, hodiny slunce, enum síly větru / mlhy / oblačnosti.
+
+Katalogové filtry, prahy v `clothing_rules` a robotaxi advisories zůstávají v kanonu (°C, m, m/s, mm). FE může UI filtru ukázat v preferované jednotce, ale na API pošle SI.
 
 ### `trips`
 
@@ -42,9 +58,9 @@
 | `recommended_age_min` | SMALLINT, nullable | Nejvyšší minimální věk mezi aktivitami — `MAX(segments.recommended_age_min)` přes `segment_kind = activity` (`NULL` = bez spodní hranice); cache odvozená ze segmentů, ne ručně editovatelná |
 | `recommended_age_max` | SMALLINT, nullable | Nejpřísnější horní hranice věku mezi aktivitami — `MIN(segments.recommended_age_max)` přes `segment_kind = activity` (`NULL` = bez horní hranice); cache odvozená ze segmentů, ne ručně editovatelná |
 | `max_difficulty` | segment_difficulty, nullable | Agregovaná nejvyšší náročnost z aktivit; cache odvozená ze segmentů, ne ručně editovatelná; `NULL` = žádná aktivita s náročností — ve filtrovaném katalogu dle náročnosti se nezobrazí |
-| `temp_min_c` | NUMERIC(4, 1), nullable | Agregovaná nejnižší očekávaná **vzduchová** teplota výletu ve °C; cache z `weather_records` s fallbackem na `weather_climate_months`, ne ručně editovatelná |
+| `temp_min_c` | NUMERIC(4, 1), nullable | Agregovaná nejnižší očekávaná **vzduchová** teplota výletu ve °C; cache z `weather_records` s fallbackem na `weather_climate_months`, ne ručně editovatelná. FE zobrazení dle `users.unit_system` |
 | `temp_max_c` | NUMERIC(4, 1), nullable | Agregovaná nejvyšší očekávaná **vzduchová** teplota výletu ve °C; cache z `weather_records` s fallbackem na `weather_climate_months`, ne ručně editovatelná |
-| `feels_like_min_c` | NUMERIC(4, 1), nullable | Agregovaná nejnižší očekávaná **pocitová** teplota výletu ve °C; cache z `weather_records` s fallbackem na klima (viz [Pocitová teplota](weather-and-climate.md#pocitová-teplota)); ne ručně editovatelná; primární pro katalogový filtr teploty |
+| `feels_like_min_c` | NUMERIC(4, 1), nullable | Agregovaná nejnižší očekávaná **pocitová** teplota výletu ve °C; cache z `weather_records` s fallbackem na klima (viz [Pocitová teplota](weather-and-climate.md#pocitová-teplota)); ne ručně editovatelná; primární pro katalogový filtr teploty (filtr vždy ve °C) |
 | `feels_like_max_c` | NUMERIC(4, 1), nullable | Agregovaná nejvyšší očekávaná **pocitová** teplota výletu ve °C; cache z `weather_records` s fallbackem na klima; ne ručně editovatelná; primární pro katalogový filtr teploty |
 | `temperature_source` | temperature_source, nullable | Odkud teplotní cache pochází: `weather_records` (všechny dotčené týdny měly týdenní záznam, včetně rodičovské oblasti přes [geo-fallback](weather-and-climate.md#hierarchie-oblastí-a-geo-fallback)) nebo `climate` (alespoň jeden se dopočítal z `weather_climate_months`); `NULL` = teplotní cache je prázdná — viz [Fallback na klima](weather-and-climate.md#fallback-na-klima) |
 | `water_temp_min_c` | NUMERIC(4, 1), nullable | Agregovaná nejnižší očekávaná teplota **mořské vody** (SST) výletu ve °C; cache z `weather_records` s fallbackem na klima; ne ručně editovatelná; `NULL` = výlet nemá vyřešitelnou SST (vnitrozemí / bez marine bodu) — viz [Teplota mořské vody](weather-and-climate.md#teplota-mořské-vody-sst) |

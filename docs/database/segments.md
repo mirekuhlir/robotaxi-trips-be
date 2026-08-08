@@ -55,7 +55,7 @@ Validace v aplikaci: `image_url` musí být neprázdná HTTPS URL; prázdný `ca
 | `segment_id` | UUID, PK, FK → segments | ON DELETE CASCADE |
 | `transport_mode` | transport_mode, NOT NULL | |
 | `provider_id` | UUID, FK → robotaxi_providers, nullable | Poskytovatel robotaxi; u `transport_mode = robotaxi` povinné; u ostatních režimů `NULL`; ON DELETE RESTRICT |
-| `distance_meters` | INTEGER, nullable | Délka trasy v metrech; pokud vyplněno, musí být `>= 0` |
+| `distance_meters` | INTEGER, nullable | Délka trasy v metrech; pokud vyplněno, musí být `>= 0`. API vždy metry; FE formátuje podle `users.unit_system` — viz [Jednotky zobrazení](users-and-trips.md#jednotky-zobrazení) |
 | `booking_reference` | VARCHAR, nullable | ID rezervace z API |
 | `pickup_zone_place_id` | UUID, FK → places, nullable | Pickup zóna robotaxi; ON DELETE RESTRICT; aplikace validuje kategorii `robotaxi_pickup_zone`; jen u `transport_mode = robotaxi`, jinak `NULL` |
 | `dropoff_zone_place_id` | UUID, FK → places, nullable | Dropoff zóna robotaxi; ON DELETE RESTRICT; aplikace validuje kategorii `robotaxi_pickup_zone`; jen u `transport_mode = robotaxi`, jinak `NULL` |

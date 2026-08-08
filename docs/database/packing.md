@@ -236,7 +236,7 @@ JOIN segments s ON s.id = spis.segment_id
 WHERE s.trip_id = :trip_id;
 ```
 
-Labely pro UI mapuje FE z i18n souborů podle `slug` a `users.locale` (fallback na výchozí jazyk aplikace).
+Labely pro UI mapuje FE z i18n souborů podle `slug` a `users.locale` (fallback na výchozí jazyk aplikace). Prahy v `clothing_rules` zůstávají ve °C / mm / m/s; FE jen zobrazí teplotu a další veličiny v preferované jednotce dle `users.unit_system` — viz [Jednotky zobrazení](users-and-trips.md#jednotky-zobrazení).
 
 #### Kdy invalidovat cache
 

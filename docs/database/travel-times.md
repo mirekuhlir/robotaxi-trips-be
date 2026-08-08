@@ -17,7 +17,7 @@ Matice odhadů dojezdu place → place per `transport_mode`. Zdroj pravdy pro ka
 | `destination_place_id` | UUID, FK → places | ON DELETE CASCADE |
 | `transport_mode` | transport_mode, NOT NULL | Režim dopravy odhadu |
 | `duration_minutes` | INTEGER, NOT NULL | Odhadovaná doba cesty v minutách; `> 0` |
-| `distance_meters` | INTEGER, nullable | Volitelná délka trasy v metrech; pokud vyplněno, `>= 0` |
+| `distance_meters` | INTEGER, nullable | Volitelná délka trasy v metrech; pokud vyplněno, `>= 0`. API vždy metry; FE formátuje podle `users.unit_system` — viz [Jednotky zobrazení](users-and-trips.md#jednotky-zobrazení) |
 | `source` | VARCHAR, NOT NULL | Slug zdroje odhadu (např. `routing_api`, `manual`, `estimated`) — volný text jako `places.external_source`, ne enum |
 | `computed_at` | TIMESTAMPTZ, NOT NULL | Čas výpočtu / poslední aktualizace odhadu; výchozí `now()` |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |

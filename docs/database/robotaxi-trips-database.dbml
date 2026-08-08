@@ -177,6 +177,11 @@ Enum place_robotaxi_access {
   not_accessible [note: 'Robotaxi k místu smysluplně nedoveze']
 }
 
+Enum unit_system {
+  metric [note: 'FE: m/km, °C, m/s, mm — DB/API vždy SI']
+  imperial [note: 'FE: ft/mi, °F, mph, in — DB/API vždy SI; přepočet jen na FE']
+}
+
 // ─── Uživatelé a výlety ──────────────────────────────────────
 
 TableGroup core_trips {
@@ -207,6 +212,7 @@ Table users {
   avatar_url text
   timezone varchar [not null, default: 'UTC']
   locale varchar [not null, default: 'en']
+  unit_system unit_system [not null, default: 'metric', note: 'Zobrazení vzdálenosti/teploty/větru/srážek; DB/API vždy SI; přepočet jen FE']
   home_currency char(3) [not null, default: 'USD', note: 'ISO 4217 uppercase; výchozí plánovací měna; CHECK ^[A-Z]{3}$']
   home_country_code char(2) [note: 'ISO 3166-1 alpha-2; NULL = neznámé; FE zásuvky / budoucí formality; CHECK ^[A-Z]{2}$']
   created_at timestamptz [not null, default: `now()`]

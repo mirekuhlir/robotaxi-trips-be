@@ -335,6 +335,7 @@ Tyto invarianty PostgreSQL CHECK neřeší — vynucuj je aplikace při zápisu:
 
 - `users.home_currency` a `trips.home_currency` musí být validní ISO 4217 uppercase (`^[A-Z]{3}$`)
 - `users.home_country_code` při vyplnění musí být validní ISO 3166-1 alpha-2 uppercase (`^[A-Z]{2}$`); Soft: pokud existuje řádek v `country_electrical_standards`, měl by na něj sedět (FE nápověda zásuvek jinak domácí zemi přeskočí)
+- `users.unit_system` je enum `metric` / `imperial` (NOT NULL, default `metric`); BE nepřepočítává vzdálenosti/teploty/vítr/srážky — přepočet jen FE dle [Jednotky zobrazení](users-and-trips.md#jednotky-zobrazení)
 - změna `trips.home_currency` vyžaduje zamknout výlet `FOR UPDATE` a v jedné transakci přepočítat všechny jeho segmenty (`home_price_amount`, `exchange_rate_local_to_home`) a `total_cost_home`
 - u `segment_kind = accommodation` musí split ceny držet konzistenci napříč vrstvami: `SUM(local_price_amount)`, `SUM(home_price_amount)` a `SUM(price_usd)` odpovídají celkové ceně rezervace
 - segmenty jednoho výletu se modelují jako **polootevřené intervaly** `[start_time, end_time)`; produkční DB vynucuje nepřekrývání exclusion constraintem níže. Aplikace stále validuje před zápisem kvůli lepší chybové hlášce; dotyk na hranici je povolen (`end_time` segmentu A = `start_time` segmentu B není překryv); mezery mezi segmenty jsou povolené
