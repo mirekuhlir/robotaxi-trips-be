@@ -60,7 +60,7 @@ Matice v1 typicky drží odhady jen pro long-haul režimy; short-hop řádky nej
 
 ### Cache destinace a outbound režimu na `trips`
 
-Sloupce `destination_place_id` a `outbound_transport_mode` jsou read-only cache. Autor je nevyplňuje ručně; aplikace je přepočítá při změně segmentů nebo při smazání / změně míst použité v itineráři. DB CHECK vynucuje párovost: **obě NOT NULL, nebo obě NULL** (stejný pattern jako `temperature_source` ↔ `feels_like_*`).
+Sloupce `destination_place_id` a `outbound_transport_mode` jsou read-only cache. Autor je nevyplňuje ručně; aplikace je přepočítá při změně segmentů, libovolné změně `transit_details` nebo při smazání / změně míst použitých v itineráři. DB CHECK vynucuje párovost: **obě NOT NULL, nebo obě NULL** (stejný pattern jako `temperature_source` ↔ `feels_like_*`).
 
 #### Pravidlo destinace (`destination_place_id`)
 
@@ -83,14 +83,15 @@ Vyžaduje nejdřív vyřešený `destination_place_id`. Pokud je destinace `NULL
 
 Po výpočtu: pokud je vyplněný jen jeden z páru `(destination_place_id, outbound_transport_mode)`, nastav **oba** na `NULL` (nekonzistentní částečná cache se neukládá).
 
-FK `destination_place_id` má `ON DELETE SET NULL`. Smazání místa destinace vynuluje pár (aplikace při SET NULL nastaví i `outbound_transport_mode = NULL`, nebo přepočítá celý výlet).
+FK `destination_place_id` má `ON DELETE SET NULL`, ale kvůli párovému CHECK není samotná FK akce kompletní workflow. **Před DELETE místa** aplikace zamkne dotčené výlety a nastaví oba sloupce na `NULL` nebo celý pár přepočítá; teprve poté smaže místo. Tím je následný SET NULL bezpečný a idempotentní.
 
 #### Kdy invalidovat cache
 
-Přepočty v aplikační vrstvě (ne DB triggerem), typicky ve stejné transakci jako ostatní agregace na `trips`:
+Přepočty v aplikační vrstvě (ne DB triggerem), ve stejné zamčené transakci jako ostatní agregace na `trips`; kanonická transakční hranice je v [Concurrency a čerstvost cache](implementation-notes.md#concurrency-a-čerstvost-cache):
 
-- INSERT / UPDATE / DELETE segmentů nebo `transit_details` výletu
+- INSERT / UPDATE / DELETE segmentů nebo libovolná změna `transit_details` výletu
 - smazání místa použitých v segmentech (RESTRICT na `segments` obvykle blokuje dřív) — po přepojení segmentů přepočítat
+- změna geo/regionálních polí místa sama pár destinace/režimu obvykle nemění, ale spouští weather-dependent invalidace podle [Places](places.md#změna-místa-a-invalidace-výletů)
 
 ### Naplnění matice
 

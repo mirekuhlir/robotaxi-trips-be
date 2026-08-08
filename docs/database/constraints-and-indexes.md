@@ -335,17 +335,17 @@ Tyto invarianty PostgreSQL CHECK neřeší — vynucuj je aplikace při zápisu:
 
 - `users.home_currency` a `trips.home_currency` musí být validní ISO 4217 uppercase (`^[A-Z]{3}$`)
 - `users.home_country_code` při vyplnění musí být validní ISO 3166-1 alpha-2 uppercase (`^[A-Z]{2}$`); Soft: pokud existuje řádek v `country_electrical_standards`, měl by na něj sedět (FE nápověda zásuvek jinak domácí zemi přeskočí)
-- změna `trips.home_currency` vyžaduje v jedné transakci přepočet všech segmentů výletu (`home_price_amount`, `exchange_rate_local_to_home`) a `total_cost_home`
+- změna `trips.home_currency` vyžaduje zamknout výlet `FOR UPDATE` a v jedné transakci přepočítat všechny jeho segmenty (`home_price_amount`, `exchange_rate_local_to_home`) a `total_cost_home`
 - u `segment_kind = accommodation` musí split ceny držet konzistenci napříč vrstvami: `SUM(local_price_amount)`, `SUM(home_price_amount)` a `SUM(price_usd)` odpovídají celkové ceně rezervace
 - segmenty jednoho výletu se modelují jako **polootevřené intervaly** `[start_time, end_time)`; produkční DB vynucuje nepřekrývání exclusion constraintem níže. Aplikace stále validuje před zápisem kvůli lepší chybové hlášce; dotyk na hranici je povolen (`end_time` segmentu A = `start_time` segmentu B není překryv); mezery mezi segmenty jsou povolené
-- při INSERT/UPDATE/DELETE segmentů v aplikační vrstvě používej jednu transakci se zámkem na výlet (`SELECT * FROM trips WHERE id = :trip_id FOR UPDATE`) nebo advisory lockem per `trip_id`; DB constraint je poslední ochrana proti souběžným zápisům
+- při INSERT/UPDATE/DELETE segmentů nebo `transit_details` a při přepočtu trip cache používej společnou transakci se zámkem výletu (`SELECT id FROM trips WHERE id = :trip_id FOR UPDATE`); stejný zámek používají background joby. Kanonický postup, invalidace a stale sémantika jsou v [Concurrency a čerstvost cache](implementation-notes.md#concurrency-a-čerstvost-cache); DB constraint je poslední ochrana proti souběžným zápisům
 - u segmentů se stejným `trip_id` nesmí dva segmenty s `end_time > start_time` sdílet stejný `start_time` — timeline je striktně lineární, bez paralelních větví; pravidlo je redundantní s nepřekrýváním, ale explicitně garantuje deterministické `ORDER BY start_time, id` bez paralelních větví
-- `transit_details` existuje jen u segmentů s `segment_kind = transit`
+- `transit_details` existuje právě jednou u segmentů s `segment_kind = transit` a nikdy u ostatních; změna `segment_kind` převádí celý cílový stav atomicky podle [Změna segment_kind](segments.md#změna-segment_kind)
 - konzistence `segment_kind` ↔ `end_place_id` / `transit_details` / kategorie místa / `recommended_age_*` / `difficulty` (viz [Sémantika segmentů](segments.md#sémantika-segmentů))
 - `recommended_age_min` / `recommended_age_max` jen u `segment_kind = activity`; u `accommodation` a `transit` vždy NULL
 - `difficulty` u `accommodation` vždy NULL; u `activity` volitelné (agregace `max_difficulty`); u `transit` volitelné (jen `clothing_rules`, ne agregace)
-- na každém výletu musí být v `trip_members` alespoň jeden admin — validace při DELETE člena nebo UPDATE role
-- před `DELETE FROM users` ověřit, že uživatel není **jediný admin** na žádném výletu — jinak chyba validace (CASCADE na `trip_members.user_id` by jinak porušil invariant admina; RESTRICT na `created_by` to neřeší, tvůrce může být už odstraněn z `trip_members`)
+- na každém výletu musí být v `trip_members` alespoň jeden admin — každá členská mutace zamkne rodičovský řádek `trips` a validuje výsledný stav až po získání zámku; viz [Race-safe ochrana posledního admina](users-and-trips.md#race-safe-ochrana-posledního-admina)
+- před `DELETE FROM users` zamknout všechny dotčené výlety v deterministickém pořadí a ověřit, že uživatel není **jediný admin** na žádném z nich — jinak chyba validace (CASCADE na `trip_members.user_id` by jinak porušil invariant admina; RESTRICT na `created_by` to neřeší, tvůrce může být už odstraněn z `trip_members`)
 - agregace věku aktivit nesmí vést k `recommended_age_min > recommended_age_max` na `trips` — jinak poruší DB CHECK; aplikace detekuje konflikt při uložení segmentu před COMMIT
 - `places.weather_region_id` smí odkazovat jen na `weather_regions` ve stejné zemi (`places.country_code = weather_regions.country_code`, pokud je `places.country_code` vyplněné); při ručním přiřazení validuj i jemnější shodu podle typu regionu (`postal_code`, `locality`, `subdivision`), pokud jsou příslušná pole na místě známá
 - u `places` prázdné řetězce `name` / `description` / `website_url` / `address` / `phone_calling_code` / `telephone` normalizuj na `NULL`; `website_url` při vyplnění musí být HTTPS URL; `phone_calling_code` jen číslice bez vedoucího `+` (1–3 znaky); `telephone` bez předvolby — FE pro `tel:` odkaz spojí číslice z obou polí; externí `rating` (Google Maps–style) volitelné, při vyplnění `1.0`–`5.0` — **ne** přepisovat z `place_reviews`
@@ -358,10 +358,11 @@ Tyto invarianty PostgreSQL CHECK neřeší — vynucuj je aplikace při zápisu:
 - `clothing_rules` musí mít alespoň jednu aktivní podmínku (skalární sloupec, `non_accommodation_activity = true`, nebo ≥1 řádek v junction tabulce) — pravidlo bez podmínky je neplatné
 - `travel_requirement_rules` musí mít alespoň jednu aktivní podmínku (skalární sloupec NOT NULL) — pravidlo bez podmínky je neplatné
 - `robotaxi_advisory_rules` musí mít alespoň jednu aktivní podmínku (skalární sloupec NOT NULL nebo ≥1 řádek v junction tabulce) — pravidlo bez podmínky je neplatné
-- u `transit_details` s `transport_mode = robotaxi`: `provider_id` NOT NULL; `pickup_zone_place_id`, `dropoff_zone_place_id`, `estimated_wait_minutes`, `passenger_count`, `vehicle_model_id` smí být vyplněné jen u robotaxi — u ostatních režimů vždy `NULL`
+- u `transit_details` s `transport_mode = robotaxi`: `provider_id` NOT NULL a aktivní při vytvoření/změně; `pickup_zone_place_id`, `dropoff_zone_place_id`, `estimated_wait_minutes`, `passenger_count`, `vehicle_model_id` smí být vyplněné jen u robotaxi — u ostatních režimů vždy `NULL`
 - u `transit_details` s `transport_mode <> robotaxi`: `provider_id`, `pickup_zone_place_id`, `dropoff_zone_place_id`, `estimated_wait_minutes`, `passenger_count`, `vehicle_model_id` vždy `NULL`
+- `distance_meters` a `booking_reference` jsou povolené u všech transit režimů; prázdný `booking_reference` normalizuj na `NULL`
 - `pickup_zone_place_id` / `dropoff_zone_place_id` musí odkazovat na `places` s kategorií `robotaxi_pickup_zone`
-- `vehicle_model_id` musí odkazovat na model se stejným `provider_id` jako `transit_details.provider_id`
+- `vehicle_model_id` musí při vytvoření/změně odkazovat na aktivní model se stejným `provider_id` jako `transit_details.provider_id`; pozdější deaktivace nemění historický itinerář
 - `passenger_count` nesmí překročit `robotaxi_vehicle_models.seat_count`, pokud je `vehicle_model_id` vyplněné
 - soft: `passenger_count` (pokud vyplněné) nesmí překročit `trips.party_size`; při vytvoření robotaxi úseku bez `passenger_count` použij výchozí `trips.party_size` — viz [Velikost skupiny](users-and-trips.md#velikost-skupiny)
 
@@ -377,6 +378,138 @@ ALTER TABLE segments
     tstzrange(start_time, end_time, '[)') WITH &&
   );
 ```
+
+### `ON DELETE` akce (PostgreSQL)
+
+Každý FK musí mít v migraci explicitní akci. Nenechávej chování na implicitním `NO ACTION`; DBML uvádí tyto akce jen v poznámkách.
+
+| Vazba | `ON DELETE` | Důvod / doprovodná akce |
+|---|---|---|
+| `trips.created_by → users.id` | `RESTRICT` | Neměnný audit původního tvůrce |
+| `trips.destination_place_id → places.id` | `SET NULL` | Před DELETE místa aplikace zamkne dotčené výlety a vynuluje/přepočítá celý pár; samotný SET NULL by s nenulovým `outbound_transport_mode` selhal na CHECK |
+| `trip_members.trip_id → trips.id` | `CASCADE` | Členství zaniká s výletem |
+| `trip_members.user_id → users.id` | `CASCADE` | Před smazáním uživatele musí aplikace ověřit invariant posledního admina |
+| `trip_reviews.trip_id → trips.id` | `CASCADE` | Recenze zaniká s výletem |
+| `trip_reviews.user_id → users.id` | `RESTRICT` | Recenzi je nutné vyřešit před smazáním autora |
+| `trip_review_media.review_id → trip_reviews.id` | `CASCADE` | Média zanikají s recenzí |
+| `place_reviews.place_id → places.id` | `CASCADE` | Recenze zaniká s místem |
+| `place_reviews.user_id → users.id` | `RESTRICT` | Recenzi je nutné vyřešit před smazáním autora |
+| `place_review_media.review_id → place_reviews.id` | `CASCADE` | Média zanikají s recenzí |
+| `places.category_id → place_categories.id` | `RESTRICT` | Používanou kategorii nelze smazat |
+| `places.weather_region_id → weather_regions.id` | `SET NULL` | Místo může dočasně zůstat bez oblasti počasí |
+| `places.robotaxi_access_place_id → places.id` | `SET NULL` | Před smazáním přepoj/vynuluj `via_access_point`, jinak selže last-mile CHECK |
+| `weather_records.weather_region_id → weather_regions.id` | `CASCADE` | Data počasí patří oblasti |
+| `weather_climate_months.weather_region_id → weather_regions.id` | `CASCADE` | Klimatická data patří oblasti |
+| `travel_time_estimates.origin_place_id → places.id` | `CASCADE` | Odhad bez originu nemá význam |
+| `travel_time_estimates.destination_place_id → places.id` | `CASCADE` | Odhad bez destinace nemá význam |
+| `segments.trip_id → trips.id` | `CASCADE` | Segment patří výletu |
+| `segments.start_place_id → places.id` | `RESTRICT` | Použité místo je nutné nejdřív přepojit |
+| `segments.end_place_id → places.id` | `RESTRICT` | Použité místo je nutné nejdřív přepojit |
+| `segment_images.segment_id → segments.id` | `CASCADE` | Galerie patří segmentu |
+| `transit_details.segment_id → segments.id` | `CASCADE` | 1:1 rozšíření transit segmentu |
+| `transit_details.provider_id → robotaxi_providers.id` | `RESTRICT` | Historicky použitý provider se nemaže |
+| `transit_details.pickup_zone_place_id → places.id` | `RESTRICT` | Použitou zónu je nutné nejdřív přepojit |
+| `transit_details.dropoff_zone_place_id → places.id` | `RESTRICT` | Použitou zónu je nutné nejdřív přepojit |
+| `transit_details.vehicle_model_id → robotaxi_vehicle_models.id` | `RESTRICT` | Historicky použitý model se nemaže |
+| `robotaxi_vehicle_models.provider_id → robotaxi_providers.id` | `CASCADE` | Model je katalogová součást providera; aktivní použití v `transit_details` CASCADE zablokuje přes RESTRICT |
+| `provider_service_areas.provider_id → robotaxi_providers.id` | `CASCADE` | Oblast patří providerovi |
+| `robotaxi_advisory_rules.advisory_item_id → robotaxi_advisory_items.id` | `CASCADE` | Pravidla patří položce |
+| `robotaxi_advisory_rule_fog_conditions.advisory_rule_id → robotaxi_advisory_rules.id` | `CASCADE` | Junction podmínka patří pravidlu |
+| `robotaxi_advisory_rule_precipitation_intensities.advisory_rule_id → robotaxi_advisory_rules.id` | `CASCADE` | Junction podmínka patří pravidlu |
+| `robotaxi_advisory_rule_wind_forces.advisory_rule_id → robotaxi_advisory_rules.id` | `CASCADE` | Junction podmínka patří pravidlu |
+| `segment_robotaxi_advisories.segment_id → segments.id` | `CASCADE` | Segmentová cache zaniká se segmentem |
+| `segment_robotaxi_advisories.advisory_item_id → robotaxi_advisory_items.id` | `RESTRICT` | Použitou katalogovou položku deaktivuj, nemaž |
+| `trip_robotaxi_advisories.trip_id → trips.id` | `CASCADE` | Trip cache zaniká s výletem |
+| `trip_robotaxi_advisories.advisory_item_id → robotaxi_advisory_items.id` | `RESTRICT` | Použitou katalogovou položku deaktivuj, nemaž |
+| `clothing_rules.clothing_item_id → clothing_items.id` | `CASCADE` | Pravidla patří položce |
+| `clothing_rule_precipitation_intensities.clothing_rule_id → clothing_rules.id` | `CASCADE` | Junction podmínka patří pravidlu |
+| `clothing_rule_wind_forces.clothing_rule_id → clothing_rules.id` | `CASCADE` | Junction podmínka patří pravidlu |
+| `clothing_rule_fog_conditions.clothing_rule_id → clothing_rules.id` | `CASCADE` | Junction podmínka patří pravidlu |
+| `clothing_rule_sky_conditions.clothing_rule_id → clothing_rules.id` | `CASCADE` | Junction podmínka patří pravidlu |
+| `clothing_rule_difficulties.clothing_rule_id → clothing_rules.id` | `CASCADE` | Junction podmínka patří pravidlu |
+| `segment_packing_items.segment_id → segments.id` | `CASCADE` | Segmentová cache zaniká se segmentem |
+| `segment_packing_items.clothing_item_id → clothing_items.id` | `RESTRICT` | Použitou katalogovou položku deaktivuj, nemaž |
+| `segment_packing_item_sources.(segment_id, clothing_item_id) → segment_packing_items` | `CASCADE` | Zdroje patří cache řádku |
+| `trip_packing_items.trip_id → trips.id` | `CASCADE` | Trip cache zaniká s výletem |
+| `trip_packing_items.clothing_item_id → clothing_items.id` | `RESTRICT` | Použitou katalogovou položku deaktivuj, nemaž |
+| `trip_packing_item_sources.(trip_id, clothing_item_id) → trip_packing_items` | `CASCADE` | Zdroje patří cache řádku |
+| `travel_requirement_rules.travel_requirement_item_id → travel_requirement_items.id` | `CASCADE` | Pravidla patří položce |
+| `trip_travel_requirements.trip_id → trips.id` | `CASCADE` | Trip cache zaniká s výletem |
+| `trip_travel_requirements.travel_requirement_item_id → travel_requirement_items.id` | `RESTRICT` | Použitou katalogovou položku deaktivuj, nemaž |
+| `trip_travel_requirement_sources.(trip_id, travel_requirement_item_id) → trip_travel_requirements` | `CASCADE` | Zdroje patří cache řádku |
+| `country_plug_types.country_code → country_electrical_standards.country_code` | `CASCADE` | Vazby patří standardu země |
+| `country_plug_types.plug_type_id → plug_types.id` | `RESTRICT` | Použitý typ zásuvky deaktivuj, nemaž |
+
+### Partial indexy — kanonické DDL
+
+DBML označuje partial indexy poznámkou; následující SQL je jejich produkční tvar. Zejména čtyři partial `UNIQUE` indexy nesmí být nahrazeny globálním `UNIQUE`.
+
+```sql
+CREATE INDEX idx_users_home_country_code
+  ON users (home_country_code)
+  WHERE home_country_code IS NOT NULL;
+
+CREATE INDEX idx_trips_destination_outbound
+  ON trips (destination_place_id, outbound_transport_mode)
+  WHERE destination_place_id IS NOT NULL;
+
+CREATE UNIQUE INDEX uq_places_external
+  ON places (external_source, external_place_id)
+  WHERE external_source IS NOT NULL;
+CREATE INDEX idx_places_country_code
+  ON places (country_code)
+  WHERE country_code IS NOT NULL;
+CREATE INDEX idx_places_postal_code
+  ON places (country_code, postal_code)
+  WHERE country_code IS NOT NULL AND postal_code IS NOT NULL;
+CREATE INDEX idx_places_robotaxi_access_place_id
+  ON places (robotaxi_access_place_id)
+  WHERE robotaxi_access_place_id IS NOT NULL;
+
+CREATE UNIQUE INDEX uq_weather_regions_postal
+  ON weather_regions (country_code, postal_code)
+  WHERE region_type = 'postal_code';
+CREATE UNIQUE INDEX uq_weather_regions_locality
+  ON weather_regions (country_code, subdivision_code, locality)
+  WHERE region_type = 'locality';
+CREATE UNIQUE INDEX uq_weather_regions_subdivision
+  ON weather_regions (country_code, subdivision_code)
+  WHERE region_type = 'subdivision';
+
+CREATE INDEX idx_segments_end_place_id
+  ON segments (end_place_id)
+  WHERE end_place_id IS NOT NULL;
+
+CREATE INDEX idx_transit_details_vehicle_model_id
+  ON transit_details (vehicle_model_id)
+  WHERE vehicle_model_id IS NOT NULL;
+CREATE INDEX idx_transit_details_pickup_zone
+  ON transit_details (pickup_zone_place_id)
+  WHERE pickup_zone_place_id IS NOT NULL;
+CREATE INDEX idx_transit_details_dropoff_zone
+  ON transit_details (dropoff_zone_place_id)
+  WHERE dropoff_zone_place_id IS NOT NULL;
+
+CREATE INDEX idx_plug_types_active ON plug_types (is_active) WHERE is_active = true;
+CREATE INDEX idx_clothing_items_active ON clothing_items (is_active) WHERE is_active = true;
+CREATE INDEX idx_clothing_rules_active ON clothing_rules (is_active) WHERE is_active = true;
+CREATE INDEX idx_travel_requirement_items_active ON travel_requirement_items (is_active) WHERE is_active = true;
+CREATE INDEX idx_travel_requirement_rules_active ON travel_requirement_rules (is_active) WHERE is_active = true;
+CREATE INDEX idx_robotaxi_providers_active ON robotaxi_providers (is_active) WHERE is_active = true;
+CREATE INDEX idx_robotaxi_vehicle_models_active ON robotaxi_vehicle_models (is_active) WHERE is_active = true;
+CREATE INDEX idx_robotaxi_advisory_items_active ON robotaxi_advisory_items (is_active) WHERE is_active = true;
+CREATE INDEX idx_robotaxi_advisory_rules_active ON robotaxi_advisory_rules (is_active) WHERE is_active = true;
+```
+
+### Kontrolní seznam produkční migrace
+
+- vytvořit všechny enumy, tabulky, PK a FK s explicitními `ON DELETE` akcemi z této stránky
+- vytvořit všechny zde uvedené `CHECK` constrainty; cross-table workflow pravidla zůstanou v aplikaci
+- vytvořit běžné indexy z DBML; všechny indexy označené v DBML jako partial/partial unique z DBML exportu **vynechat** a vytvořit je výhradně z kanonického DDL výše, aby nevznikl duplicitní plný index ani globální `UNIQUE`
+- zapnout `btree_gist` a vytvořit `segments_no_overlap`
+- vytvořit automatický `updated_at` trigger na všech entitních tabulkách dle [architektonických principů](README.md#architektonické-principy)
+- integračně otestovat pozitivní i negativní scénáře pro CHECK, partial uniqueness, FK mazání a překryv segmentů
+- negenerovat produkční migraci přímo z DBML; diagram je vizualizace, tato stránka je kanon pro PostgreSQL vlastnosti
 
 ---
 

@@ -80,7 +80,7 @@ Primární zdroj pravdy pro typ segmentu je sloupec `segment_kind`. Aplikace ho 
 |---|---|---|---|---|---|
 | `accommodation` | NULL | nesmí existovat | `accommodation` | vždy NULL | vždy NULL |
 | `activity` | NULL nebo NOT NULL | nesmí existovat | libovolná (včetně `accommodation` — např. spa v hotelu) | volitelné | volitelné (vstup pro agregaci `max_difficulty`) |
-| `transit` | NOT NULL | povinný řádek | libovolná | vždy NULL | volitelné (jen pro `clothing_rules`, ne pro `max_difficulty`) |
+| `transit` | NOT NULL | právě jeden řádek před COMMIT | libovolná | vždy NULL | volitelné (jen pro `clothing_rules`, ne pro `max_difficulty`) |
 
 **`end_place_id` u transitů:** `start_place_id = end_place_id` je **povolen** — okružní jízda (vyhlídková loď, scenic drive robotaxi) reálně existuje a končí tam, kde začala. Na rozdíl od aktivit se rovnost nevaliduje jako chyba; lookup počasí pak oba směry vyhodnotí jako stejný region (deduplikace `(weather_region_id, week_start)` to pokrývá).
 
@@ -115,6 +115,33 @@ Segmenty se modelují jako polootevřené intervaly `[start_time, end_time)`. P�
 Timeline segmentů načítej `ORDER BY start_time, id`. Sloupec `id` slouží jen jako deterministický tie-breaker pro řazení (např. po migraci dat), ne jako podpora paralelních segmentů.
 
 Nepřekrývání segmentů vynucuje DB exclusion constraint (aplikace validuje navíc před zápisem kvůli lepší chybové hlášce); konzistenci `transit_details` vynucuj v aplikační vrstvě — viz [DB constrainty](constraints-and-indexes.md#db-constrainty).
+
+#### Atomický zápis segmentu
+
+Každý CREATE/UPDATE/DELETE segmentu a každá změna `transit_details` používá jednu transakci a společný zápisový use-case. Kanonické pořadí:
+
+1. Zamknout rodičovský výlet: `SELECT id FROM trips WHERE id = :trip_id FOR UPDATE`.
+2. Načíst aktuální segment, případné `transit_details`, místa, provider a model potřebné pro validaci. `segments.trip_id` je po vytvoření neměnný; přesun mezi výlety se provádí jako DELETE + CREATE se zámky obou výletů získanými v deterministickém pořadí `trip_id`, ne UPDATE.
+3. Sestavit a validovat **cílový stav** podle matice výše, včetně časového překryvu a robotaxi pravidel níže. Validace nesmí spoléhat na hodnoty načtené před získáním zámku.
+4. Zapsat `segments` a podle cílového `segment_kind` atomicky vložit/upravit nebo odstranit `transit_details`.
+5. Přepočítat všechny cache dotčeného výletu stejným postupem jako ostatní segmentové mutace.
+6. Commitnout až po úspěšné validaci a přepočtu. Jakákoli chyba vrací celou transakci zpět.
+
+Zámek, úplný seznam invalidací a pravidla pro background joby jsou kanonicky popsány v [Concurrency a čerstvost cache](implementation-notes.md#concurrency-a-čerstvost-cache).
+
+#### Změna `segment_kind`
+
+Změna typu není prostý UPDATE jednoho sloupce; aplikace musí v rámci atomického zápisu převést celý stav:
+
+| Přechod | Povinná změna |
+|---|---|
+| `activity → accommodation` | `end_place_id = NULL`, `recommended_age_* = NULL`, `difficulty = NULL`; `start_place_id` musí mít kategorii `accommodation` |
+| `accommodation → activity` | `transit_details` nesmí existovat; `end_place_id`, věk a náročnost se nastaví podle cílové aktivity |
+| `activity/accommodation → transit` | `end_place_id` musí být NOT NULL, `recommended_age_* = NULL`; ve stejné transakci vznikne validní `transit_details` |
+| `transit → activity` | odstranit `transit_details`; `end_place_id` smí zůstat jen při `end_place_id <> start_place_id`; věk a náročnost se nastaví podle cílové aktivity |
+| `transit → accommodation` | odstranit `transit_details`; `end_place_id = NULL`, `recommended_age_* = NULL`, `difficulty = NULL`; ověřit kategorii ubytování |
+
+Nejdřív se validuje celý cílový stav, teprve potom se zapisuje. API nesmí po částečném přechodu zveřejnit transit bez `transit_details` ani non-transit s osiřelým `transit_details`.
 
 ### Obsah segmentu
 
@@ -171,7 +198,7 @@ Referenční popisy níže patří do FE locale souborů, ne do PostgreSQL.
 - `total_cost_usd` — agregovaná cena v USD (`SUM price_usd`); **jediný zdroj pro filtrování a řazení veřejného katalogu**
 - `total_duration_minutes` — viz [Agregace na úrovni `trips`](implementation-notes.md#agregace-na-úrovni-trips)
 
-Autor výletu cache ceny nevyplňuje ručně; aplikace je přepočítá při každé změně segmentů nebo `home_currency`. Orientační přepočet ceny pro prohlížeče s jinou preferovanou měnou (mimo `home_currency` výletu) probíhá v UI za běhu z `price_usd` — bez per-user cache v DB.
+Autor výletu cache ceny nevyplňuje ručně; aplikace ji přepočítá společným atomickým workflow při každé změně segmentů a při změně `home_currency`. Změny `transit_details` spouštějí společný přepočet ostatních trip cache, i když samotnou cenu nemění. Orientační přepočet ceny pro prohlížeče s jinou preferovanou měnou (mimo `home_currency` výletu) probíhá v UI za běhu z `price_usd` — bez per-user cache v DB.
 
 #### Kurz měny
 
@@ -183,7 +210,7 @@ Při INSERT/UPDATE segmentu aplikace přepočítá obě konverzní vrstvy (v jed
 4. Obě konverze jdou **přímo z místní měny** (ne přes USD), aby se minimalizovalo dvojité zaokrouhlování.
 5. Agregovat `total_cost_usd = SUM(price_usd)` a `total_cost_home = SUM(home_price_amount)`.
 
-**Změna `trips.home_currency`:** v jedné transakci přepočítat `exchange_rate_local_to_home` a `home_price_amount` na **všech** segmentech výletu, poté `total_cost_home`. USD vrstva (`price_usd`, `total_cost_usd`) se nemění.
+**Změna `trips.home_currency`:** v jedné transakci nejdřív zamknout výlet přes `SELECT … FOR UPDATE`, potom přepočítat `exchange_rate_local_to_home` a `home_price_amount` na **všech** segmentech a nakonec `total_cost_home`. USD vrstva (`price_usd`, `total_cost_usd`) se nemění; viz [Concurrency a čerstvost cache](implementation-notes.md#concurrency-a-čerstvost-cache).
 
 **Bezplatné segmenty (`local_price_amount = 0`):** uložit `local_price_currency = 'USD'`, `exchange_rate_local_to_usd = 1.0`, `exchange_rate_local_to_home = 1.0`, `price_usd = 0`, `home_price_amount = 0`. Jde o auditní konvenci — UI zobrazuje „zdarma“ bez ohledu na měnu.
 
@@ -273,10 +300,14 @@ Tabulka `transit_details` existuje pouze u segmentů s `segment_kind = transit`.
 
 - INSERT do `transit_details` jen u segmentů s `segment_kind = transit`
 - segmenty `accommodation` a `activity` nemají `transit_details`
-- `transport_mode = 'robotaxi'` ⇒ `provider_id` NOT NULL (FK na aktivního `robotaxi_providers`)
+- každý transit segment musí mít právě jeden `transit_details` před COMMIT
+- `transport_mode = 'robotaxi'` ⇒ `provider_id` NOT NULL a provider musí mít `is_active = true` při vytvoření nebo změně robotaxi úseku
 - ostatní `transport_mode` ⇒ `provider_id`, `pickup_zone_place_id`, `dropoff_zone_place_id`, `estimated_wait_minutes`, `passenger_count`, `vehicle_model_id` vždy `NULL`
+- `distance_meters` a `booking_reference` jsou obecná transit metadata a smějí být vyplněná pro libovolný `transport_mode`; prázdný `booking_reference` normalizuj na `NULL`
 - u robotaxi: `pickup_zone_place_id` / `dropoff_zone_place_id` volitelné, ale pokud vyplněné, musí být `places` s kategorií `robotaxi_pickup_zone`
-- u robotaxi: pokud je `vehicle_model_id` vyplněné, `robotaxi_vehicle_models.provider_id` musí odpovídat `provider_id`
+- u robotaxi: pokud je `vehicle_model_id` vyplněné, model musí mít `is_active = true` při vytvoření nebo změně úseku a `robotaxi_vehicle_models.provider_id` musí odpovídat `provider_id`
 - u robotaxi: pokud jsou vyplněné `passenger_count` i `vehicle_model_id`, `passenger_count <= seat_count`
 - u robotaxi: pokud je `passenger_count` vyplněné, soft `passenger_count <= trips.party_size`; chybí-li `passenger_count` při INSERT, výchozí `trips.party_size` — viz [Velikost skupiny](users-and-trips.md#velikost-skupiny)
+- deaktivace providera nebo modelu zpětně nemaže ani nezneplatňuje existující itinerář; blokuje jeho nové použití a změnu na danou neaktivní hodnotu
+- každá změna kteréhokoli sloupce `transit_details` invaliduje příslušné odvozeniny podle [Concurrency a čerstvost cache](implementation-notes.md#concurrency-a-čerstvost-cache); implementace smí optimalizovat konkrétní podmnožinu až po zachování stejného výsledku
 

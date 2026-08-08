@@ -37,7 +37,7 @@
 | `total_cost_usd` | NUMERIC(10, 2) | Agregovaná cena v USD; cache odvozená ze segmentů (`SUM price_usd`); kanon pro veřejný katalog a filtrování napříč výlety; ne ručně editovatelná; výchozí `0` |
 | `total_cost_home` | NUMERIC(10, 2) | Agregovaná cena v `home_currency`; cache odvozená ze segmentů (`SUM home_price_amount`); pro rozpočet a zobrazení výletu autorovi; ne ručně editovatelná; výchozí `0` |
 | `total_duration_minutes` | INTEGER | Předpočítaná délka aktivit a dopravy v minutách (bez ubytování); cache odvozená ze segmentů, ne ručně editovatelná; výchozí `0`. **Není** doba dojezdu z výchozího místa — viz `destination_place_id` / filtr dojezdu |
-| `destination_place_id` | UUID, FK → places, nullable | Cache destinace výletu (`places.id`); odvozená ze segmentů, ne ručně editovatelná; `NULL` = destinaci nelze určit — výlet neprojde filtrem dojezdu. ON DELETE SET NULL |
+| `destination_place_id` | UUID, FK → places, nullable | Cache destinace výletu (`places.id`); odvozená ze segmentů, ne ručně editovatelná; `NULL` = destinaci nelze určit — výlet neprojde filtrem dojezdu. ON DELETE SET NULL; před DELETE místa musí aplikace připravit celý pár s `outbound_transport_mode`, viz [mazání výletů a míst](#mazání-výletu) |
 | `outbound_transport_mode` | transport_mode, nullable | Cache režimu dopravy „jak se tam dostanu“ z itineráře; párový s `destination_place_id` (obě NOT NULL nebo obě NULL). Pravidla odvození — viz [Cache destinace a outbound režimu](travel-times.md#cache-destinace-a-outbound-režimu-na-trips) |
 | `recommended_age_min` | SMALLINT, nullable | Nejvyšší minimální věk mezi aktivitami — `MAX(segments.recommended_age_min)` přes `segment_kind = activity` (`NULL` = bez spodní hranice); cache odvozená ze segmentů, ne ručně editovatelná |
 | `recommended_age_max` | SMALLINT, nullable | Nejpřísnější horní hranice věku mezi aktivitami — `MIN(segments.recommended_age_max)` přes `segment_kind = activity` (`NULL` = bez horní hranice); cache odvozená ze segmentů, ne ručně editovatelná |
@@ -52,9 +52,9 @@
 | `water_temperature_source` | temperature_source, nullable | Odkud SST cache pochází: `weather_records` / `climate` / `NULL` — stejný enum a sémantika jako `temperature_source`, ale jen pro vodu |
 | `rating_avg` | NUMERIC(2, 1), nullable | Průměrné uživatelské hodnocení výletu (`1.0`–`5.0`); cache z `trip_reviews.score`; ne ručně editovatelná; `NULL` = žádné recenze (`rating_count = 0`) |
 | `rating_count` | INTEGER, NOT NULL | Počet uživatelských recenzí; cache z `trip_reviews`; ne ručně editovatelná; výchozí `0` |
-| `packing_computed_at` | TIMESTAMPTZ, nullable | Čas posledního přepočtu cache balení (`trip_packing_items`, `segment_packing_items`); `NULL` = cache ještě nebyla spočítána |
+| `packing_computed_at` | TIMESTAMPTZ, nullable | Čas posledního úspěšného přepočtu cache balení (`trip_packing_items`, `segment_packing_items`); `NULL` = cache ještě nebyla spočítána nebo byla invalidována a čeká na job |
 | `travel_requirements_computed_at` | TIMESTAMPTZ, nullable | Čas poslední změny cache cestovních požadavků (`trip_travel_requirements`); v1 při ručním add/remove; `NULL` = cache ještě nebyla nastavena |
-| `robotaxi_advisories_computed_at` | TIMESTAMPTZ, nullable | Čas posledního přepočtu cache robotaxi upozornění (`trip_robotaxi_advisories`, `segment_robotaxi_advisories`); `NULL` = cache ještě nebyla spočítána |
+| `robotaxi_advisories_computed_at` | TIMESTAMPTZ, nullable | Čas posledního úspěšného přepočtu cache robotaxi upozornění (`trip_robotaxi_advisories`, `segment_robotaxi_advisories`); `NULL` = cache ještě nebyla spočítána nebo byla invalidována a čeká na job |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
 
@@ -70,9 +70,45 @@
 
 Při vytvoření výletu aplikace automaticky vloží tvůrce (`trips.created_by`) do `trip_members` s rolí `admin` a nastaví `trips.home_currency` z `users.home_currency` tvůrce (v téže transakci jako INSERT do `trips`). `party_size` výchozí `1`, pokud autor nezadá jinak. Existující admin může jmenovat další adminy; na jednom výletu může být více adminů.
 
-Admin **může** odstranit původního tvůrce z `trip_members`, pokud na výletu zůstane **alespoň jeden jiný admin**. `trips.created_by` zůstává neměnný auditní záznam bez vlivu na přístup. Invariant: na každém výletu musí být v `trip_members` **alespoň jeden admin** — aplikace validuje při DELETE člena nebo UPDATE role.
+Admin **může** odstranit původního tvůrce z `trip_members`, pokud na výletu zůstane **alespoň jeden jiný admin**. `trips.created_by` zůstává neměnný auditní záznam bez vlivu na přístup. Invariant: na každém výletu musí být v `trip_members` **alespoň jeden admin** — aplikace jej vynucuje zamčeným workflow níže, ne prostým předběžným `COUNT`.
 
 Dotaz „Moje výlety“: `SELECT trip_id FROM trip_members WHERE user_id = :current_user` — bez UNION s `created_by` (tvůrce je vždy v `trip_members` při vytvoření; po odstranění z `trip_members` už výlet nevidí).
+
+#### Race-safe ochrana posledního admina
+
+Invariant „alespoň jeden admin na každém výletu“ je záměrně aplikační, bez DB triggeru. Proto **každý** INSERT/UPDATE/DELETE v `trip_members` musí jít přes jednu členskou službu a zamknout rodičovský řádek `trips`; jinak mohou dva souběžné požadavky oba vyhodnotit starý počet adminů a odstranit poslední dva.
+
+Kanonický postup pro změnu role nebo odstranění člena:
+
+```sql
+BEGIN;
+
+SELECT id
+FROM trips
+WHERE id = :trip_id
+FOR UPDATE;
+
+-- po získání zámku znovu ověř oprávnění aktéra,
+-- načti cílové členství a aktuální počet role = 'admin'
+-- pokud cíl je admin a po mutaci by nezůstal žádný admin: chyba validace
+-- jinak proveď UPDATE role nebo DELETE členství
+
+COMMIT;
+```
+
+Samotný `SELECT COUNT(*)` není zámek. Serializaci zajišťuje zamčený rodičovský řádek `trips`, který musí používat všechny členské mutace. Validace se provádí až po získání zámku; hodnoty načtené dříve jsou pouze informativní.
+
+| Scénář | Výsledek |
+|---|---|
+| downgrade posledního `admin → editor/viewer` | odmítnout |
+| odstranění posledního admina včetně self-removal | odmítnout |
+| odstranění původního tvůrce, když zůstává jiný admin | povolit; `created_by` se nemění |
+| přidání nebo povýšení dalšího admina | povolit v zamčené transakci |
+| bulk změna členů | validovat výsledný stav celé dávky a commitnout jen pokud zůstává alespoň jeden admin |
+
+Vytvoření výletu je jediný případ bez existujícího řádku k zamčení: INSERT `trips` a INSERT tvůrce do `trip_members(role = 'admin')` musí být jedna transakce. Výlet bez admina se nesmí commitnout.
+
+Přímé SQL, ruční admin zásah nebo jiná služba obcházející tento workflow může invariant porušit; takový zápis je nepodporovaný. `created_by` není náhradní admin ani zdroj oprávnění.
 
 ### Velikost skupiny
 
@@ -184,7 +220,7 @@ DELETE FROM trips WHERE id = :trip_id;
 
 CASCADE smaže `trip_members`, `trip_reviews` (a přes ně `trip_review_media`), `trip_packing_items` (a přes ně `trip_packing_item_sources`), `trip_travel_requirements` (a přes ně `trip_travel_requirement_sources`), `segment_robotaxi_advisories`, `trip_robotaxi_advisories`, `segments`, `segment_images`, `segment_packing_items` (a přes ně `segment_packing_item_sources`) a `transit_details`. Oprávnění: jen uživatel s rolí `admin` v `trip_members` pro daný výlet. Skrytí z katalogu bez omezení odkazového sdílení řeší `visibility = unlisted`; úplné omezení čtení na členy řeší `visibility = private`.
 
-Hard delete místa (`DELETE FROM places`) CASCADE smaže `place_reviews` (a přes ně `place_review_media`) a řádky `travel_time_estimates`, kde je místo origin nebo destinace; `trips.destination_place_id` se nastaví na `NULL` (`ON DELETE SET NULL`) — aplikace při SET NULL nastaví i `outbound_transport_mode = NULL`, nebo přepočítá celý výlet (viz [Cache destinace a outbound režimu](travel-times.md#cache-destinace-a-outbound-režimu-na-trips)). Místo s FK z `segments` / `transit_details` blokuje RESTRICT na těchto vazbách — nejdřív odstraň nebo přepoj segmenty. Self-FK `places.robotaxi_access_place_id` je `ON DELETE SET NULL`, ale CHECK last-mile u `via_access_point` smazání access place stejně zablokuje, dokud závislá místa last-mile nepřepojíš nebo nevynuluješ.
+Hard delete místa (`DELETE FROM places`) CASCADE smaže `place_reviews` (a přes ně `place_review_media`) a řádky `travel_time_estimates`, kde je místo origin nebo destinace. **Před DELETE** aplikace zamkne výlety s `destination_place_id = :place_id` a vynuluje nebo přepočítá celý pár `destination_place_id` + `outbound_transport_mode`; samotný `ON DELETE SET NULL` by při nenulovém režimu selhal na párovém CHECK. Místo s FK z `segments` / `transit_details` blokuje RESTRICT na těchto vazbách — nejdřív odstraň nebo přepoj segmenty. Self-FK `places.robotaxi_access_place_id` je `ON DELETE SET NULL`, ale CHECK last-mile u `via_access_point` smazání access place stejně zablokuje, dokud závislá místa last-mile nepřepojíš nebo nevynuluješ.
 
 #### Mazání uživatelů
 
@@ -194,7 +230,16 @@ Hard delete místa (`DELETE FROM places`) CASCADE smaže `place_reviews` (a pře
 
 `trip_members.user_id` zůstává **ON DELETE CASCADE** — při smazání uživatele (který není blokován RESTRICT na `created_by` ani na recenzích) se odstraní jeho řádky v `trip_members` u výletů, kde byl jen členem. Před smazáním uživatele, který je tvůrcem výletů, je nutné tyto výlety smazat (hard delete) — jinak RESTRICT operaci zablokuje.
 
-**Aplikační validace před `DELETE FROM users`:** Projít všechny výlety, kde je uživatel **jediný admin** v `trip_members`. Pokud takový výlet existuje → chyba validace, uživatel se nesmaže. RESTRICT na `created_by` tento případ neřeší — původní tvůrce může být už odstraněn z `trip_members`, ale stále jediný admin. Před smazáním také smazat (nebo jinak vyřešit) řádky v `trip_reviews` / `place_reviews` daného uživatele.
+**Aplikační validace a DELETE jsou jedna transakce:** Najít všechny výlety, kde je uživatel členem, zamknout jejich řádky `trips` v deterministickém pořadí `trip_id` a teprve potom znovu ověřit, zda je uživatel na některém výletu **jediný admin**. Pokud ano → chyba validace a celý delete se vrátí zpět. Pokud ne, v téže transakci vyřešit řádky `trip_reviews` / `place_reviews`, provést `DELETE FROM users` (včetně CASCADE `trip_members`) a až poté COMMIT. Zámky se nesmějí uvolnit mezi kontrolou a DELETE. RESTRICT na `created_by` tento případ neřeší — původní tvůrce může být už odstraněn z `trip_members`, ale stále jediný admin.
+
+```sql
+BEGIN;
+-- načti dotčená trip_id a zamkni jejich trips řádky v deterministickém pořadí
+-- po zámku znovu ověř created_by, posledního admina a recenze
+-- vyřeš recenze blokující RESTRICT
+DELETE FROM users WHERE id = :user_id;
+COMMIT;
+```
 
 ```mermaid
 flowchart TD
@@ -238,7 +283,7 @@ Uživatelské recenze jsou UGC obsah připojený k výletu nebo místu: skóre, 
 
 #### Přepočet cache
 
-Po INSERT / UPDATE (`score`) / DELETE recenze v téže transakci:
+Po INSERT / UPDATE (`score`) / DELETE recenze v téže transakci nejdřív zamkni agregovaného rodiče a potom přepočítej cache: u `trip_reviews` řádek `trips` (`SELECT id FROM trips WHERE id = :trip_id FOR UPDATE`), u `place_reviews` řádek `places` (`SELECT id FROM places WHERE id = :place_id FOR UPDATE`). Zámek zabrání dvěma souběžným recenzím zapsat cache z rozdílných snapshotů:
 
 ```sql
 -- výlet

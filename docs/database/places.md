@@ -174,3 +174,9 @@ Index `idx_places_coordinates` postačí pro jednoduché bounding-box dotazy ve 
 
 Auto-párování `weather_regions` probíhá administrativně (ISO kódy na `places` a `weather_regions`), ne geometrickým poloměrem. Poslední fallback: nejbližší `center_latitude` / `center_longitude` mezi regiony **stejné země** (`country_code`); finální rozhodnutí vždy ruční `places.weather_region_id`. Ruční přiřazení nesmí obejít invariant stejné země a má respektovat jemnější shodu `postal_code` / `locality` / `subdivision_code`, pokud jsou na místě známé. Párování volí nejjemnější oblast; když pro ni chybí týdenní data, lookup za běhu zkusí rodiče — viz [Hierarchie oblastí a geo-fallback](weather-and-climate.md#hierarchie-oblastí-a-geo-fallback).
 
+### Změna místa a invalidace výletů
+
+Změna `weather_region_id`, `country_code`, `postal_code`, `subdivision_code` nebo `locality` může změnit weather lookup všech segmentů, které místo používají. Po úspěšném zápisu aplikace přes `segments.start_place_id` a `segments.end_place_id` najde dotčené `trip_id`, ve stejné transakci nastaví jejich `packing_computed_at` a `robotaxi_advisories_computed_at` na `NULL` a enqueueuje přepočet teplot, balení a robotaxi upozornění. Každý job znovu načte aktuální místo a používá trip-level zámek podle [Concurrency a čerstvost cache](implementation-notes.md#concurrency-a-čerstvost-cache).
+
+Přepojení nebo odstranění místa použitého itinerářem musí respektovat `RESTRICT` vazby segmentů. `ON DELETE SET NULL` u `trips.destination_place_id` není samostatný workflow: **před DELETE místa** aplikace zamkne dotčené výlety a nastaví oba sloupce na `NULL` nebo přepočítá celý pár, aby následná FK akce neporušila DB CHECK.
+

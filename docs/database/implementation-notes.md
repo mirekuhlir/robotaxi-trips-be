@@ -6,7 +6,7 @@ Cross-cutting přehled agregací na úrovni výletu. Doménové poznámky jsou u
 
 ### Agregace na úrovni `trips`
 
-Sloupce `total_cost_usd`, `total_cost_home`, `total_duration_minutes`, `destination_place_id`, `outbound_transport_mode`, `recommended_age_min`, `recommended_age_max`, `max_difficulty`, `temp_min_c`, `temp_max_c`, `feels_like_min_c`, `feels_like_max_c`, `temperature_source`, `water_temp_min_c`, `water_temp_max_c`, `water_temperature_source`, `rating_avg`, `rating_count`, `packing_computed_at`, `travel_requirements_computed_at`, `robotaxi_advisories_computed_at` a tabulky `trip_packing_items`, `trip_packing_item_sources`, `segment_packing_items`, `segment_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories` jsou denormalizované cache hodnoty. Agregace ze segmentů aktualizuj aplikační vrstvou při INSERT/UPDATE/DELETE na `segments` (v téže transakci); `rating_avg` / `rating_count` při změně `trip_reviews` (viz [Recenze](users-and-trips.md#recenze)):
+Sloupce `total_cost_usd`, `total_cost_home`, `total_duration_minutes`, `destination_place_id`, `outbound_transport_mode`, `recommended_age_min`, `recommended_age_max`, `max_difficulty`, `temp_min_c`, `temp_max_c`, `feels_like_min_c`, `feels_like_max_c`, `temperature_source`, `water_temp_min_c`, `water_temp_max_c`, `water_temperature_source`, `rating_avg`, `rating_count`, `packing_computed_at`, `travel_requirements_computed_at`, `robotaxi_advisories_computed_at` a tabulky `trip_packing_items`, `trip_packing_item_sources`, `segment_packing_items`, `segment_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories` jsou denormalizované cache hodnoty. Agregace ze segmentů aktualizuj aplikační vrstvou při INSERT/UPDATE/DELETE na `segments` nebo `transit_details` v zamčené transakci; `rating_avg` / `rating_count` stejným trip zámkem při změně `trip_reviews`. Asynchronní zdroje používají invalidaci a job podle [Concurrency a čerstvost cache](#concurrency-a-čerstvost-cache):
 
 - **`total_cost_usd`** — read-only cache; součet `price_usd` ze **všech** segmentů výletu (včetně ubytování). Při INSERT/UPDATE segmentu: načíst kurz `local → USD` (viz [Kurz měny](segments.md#kurz-měny)) → uložit `exchange_rate_local_to_usd` → spočítat `price_usd = ROUND(local_price_amount × exchange_rate_local_to_usd, 2)`. Změna kurzu při editaci segmentu je očekávaná u draft výletů; `exchange_rate_local_to_usd` umožňuje audit, proč se cena v USD liší. Prázdný výlet → `0`. **Veřejný katalog filtruje a řadí vždy podle tohoto sloupce.**
 - **`total_cost_home`** — read-only cache; součet `home_price_amount` ze **všech** segmentů výletu v měně `trips.home_currency`. Při INSERT/UPDATE segmentu: načíst kurz `local → home_currency` (viz [Kurz měny](segments.md#kurz-měny)) → uložit `exchange_rate_local_to_home` → spočítat `home_price_amount`. Při změně `trips.home_currency` přepočítat **všechny** segmenty výletu a znovu agregovat `total_cost_home` v jedné transakci. Prázdný výlet → `0`. Slouží pro rozpočet a zobrazení výletu autorovi — **nepoužívat** pro veřejný katalog.
@@ -29,7 +29,65 @@ Sloupce `total_cost_usd`, `total_cost_home`, `total_duration_minutes`, `destinat
 
 Přepočet vzduchové, pocitové i mořské teploty probíhá i při změně `weather_records` pro oblasti/týdny dotčené výletem **nebo jejich rodiče v geo-řetězci** (stejný aplikační handler / job jako u cache balení — lze počítat v jednom průchodu). Nově dodaný týdenní záznam na jemnější oblasti nahradí rodičovský i klimatický odhad, takže se přepočtem může `temperature_source` / `water_temperature_source` změnit z `climate` na `weather_records`. Přepočet je nutný i po sync `weather_climate_months`, pokud oblast (nebo rodič použitý jako fallback) dosud klima (včetně SST) neměla.
 
-Výlet bez aktivit nebo bez věkových limitů → oba sloupce věku `NULL`. Výlet bez aktivit s náročností → `max_difficulty` `NULL`. Výlet bez určitelné destinace / outbound režimu → `destination_place_id` i `outbound_transport_mode` `NULL`. Výlet bez SST (vnitrozemí / bez marine bodu) → `water_temp_*` i `water_temperature_source` `NULL`. Přepočet ceny, délky, destinace/outbound režimu, věku, náročnosti a teploty (včetně SST) probíhá ve **stejné transakci** při INSERT/UPDATE/DELETE segmentu, změně místní ceny/měny, změně `trips.home_currency`, času, `difficulty`, `segment_kind` nebo `transit_details.transport_mode`.
+Výlet bez aktivit nebo bez věkových limitů → oba sloupce věku `NULL`. Výlet bez aktivit s náročností → `max_difficulty` `NULL`. Výlet bez určitelné destinace / outbound režimu → `destination_place_id` i `outbound_transport_mode` `NULL`. Výlet bez SST (vnitrozemí / bez marine bodu) → `water_temp_*` i `water_temperature_source` `NULL`. Každý INSERT/UPDATE/DELETE segmentu a libovolná změna `transit_details` používá společný atomický zápisový postup níže. Konzervativně přepočítá cenu, délku, destinaci/outbound režim, věk, náročnost, teploty (včetně SST), balení a robotaxi upozornění; cestovní požadavky v1 zůstávají ruční. Změna `trips.home_currency` ve stejné zamčené transakci přepočítá všechny home měnové hodnoty segmentů a `total_cost_home`.
+
+### Concurrency a čerstvost cache
+
+#### Jediný zápisový postup pro výlet
+
+Všechny operace, které mění segmenty, `transit_details`, `trips.home_currency` nebo trip-level cache, musí používat stejnou transakční hranici:
+
+```sql
+BEGIN;
+
+SELECT id
+FROM trips
+WHERE id = :trip_id
+FOR UPDATE;
+
+-- validace cílového stavu po získání zámku
+-- mutace zdrojových řádků
+-- idempotentní přepočet všech dotčených cache
+
+COMMIT;
+```
+
+Zámek se získává **před** načtením podkladů pro validaci a drží se až do COMMIT/ROLLBACK. Aplikační pre-check překryvu zlepšuje chybovou zprávu; DB exclusion constraint `segments_no_overlap` zůstává poslední ochranou. Při deadlocku, serialization failure nebo exclusion conflictu transakci vrať zpět; automatický retry smí opakovat jen idempotentní use-case.
+
+Operace nad více výlety (batch job, smazání uživatele) získávají zámky po jednom v deterministickém pořadí `trip_id`, aby se minimalizovaly deadlocky. `segments.trip_id` je neměnný; přesun segmentu mezi výlety je DELETE + CREATE se zámky obou výletů ve stejném pořadí.
+
+#### Invalidační matice
+
+| Událost | Dotčené cache / akce |
+|---|---|
+| INSERT/UPDATE/DELETE `segments` | plný synchronní přepočet ceny, délky, destinace/outbound, věku, náročnosti, teplot, balení a robotaxi upozornění |
+| INSERT/UPDATE/DELETE nebo libovolná změna `transit_details` | stejný plný synchronní přepočet; změna režimu může změnit destinaci/outbound i členství v robotaxi cache |
+| UPDATE `trips.home_currency` | přepočet `exchange_rate_local_to_home` + `home_price_amount` všech segmentů a `trips.total_cost_home` |
+| INSERT/UPDATE/DELETE `trip_reviews` | pod trip zámkem přepočítat `rating_avg` / `rating_count` |
+| změna `weather_records` | pro dotčené regiony/týdny a potomky používající geo-fallback asynchronně přepočítat teploty, balení a robotaxi upozornění |
+| změna `weather_climate_months` | asynchronně přepočítat jen vzduchovou/pocitovou/SST teplotní cache; klima se nepoužívá pro balení ani advisories |
+| změna `places.weather_region_id`, geo polí nebo přiřazení rodičovského regionu | najít výlety přes `segments.start_place_id` / `end_place_id` a asynchronně přepočítat teploty, balení a robotaxi upozornění |
+| změna aktivních `clothing_rules`, junction podmínek nebo relevantních `clothing_items` | najít dotčené výlety a asynchronně přepočítat balení |
+| změna aktivních `robotaxi_advisory_rules`, junction podmínek nebo relevantních `robotaxi_advisory_items` | najít dotčené robotaxi výlety a asynchronně přepočítat advisories |
+| DELETE / přepojení místa používaného itinerářem | respektovat FK akce, zamknout dotčené výlety a přepočítat celý odvozený stav; pár destinace/outbound nikdy neukládat částečně |
+
+Implementace smí přepočítat menší podmnožinu jen tehdy, když integrační test prokáže stejný výsledný stav. Bez této optimalizace je kanonem plný přepočet po segmentové mutaci.
+
+#### Synchronní vs. asynchronní změny
+
+- **Synchronní zdroje** (segmenty, `transit_details`, `home_currency`, recenze) nesmějí po úspěšném COMMIT zanechat stale trip cache. Mutace a přepočet jsou jedna transakce.
+- **Asynchronní zdroje** (weather/climate sync, změny pravidel a geo přiřazení) mohou do dokončení jobu dočasně ponechat poslední úspěšnou cache. Job musí pro každý `trip_id` získat stejný `FOR UPDATE` zámek, znovu načíst aktuální zdroje a přepočítat z nich — payload fronty nesmí obsahovat snapshot dat.
+- Job je idempotentní: opakované spuštění nad stejným aktuálním stavem vytvoří stejnou cache. Cache tabulky se regenerují `DELETE` + `INSERT` uvnitř transakce; timestamp se nastaví až po úspěšném přepočtu.
+- Při chybě se transakce vrátí zpět, stará cache zůstane konzistentní jako celek a job se retryuje s omezeným backoffem. Permanentní chyba musí být viditelná v observabilitě / dead-letter queue.
+
+#### Význam `*_computed_at` a stale stav
+
+- `packing_computed_at` a `robotaxi_advisories_computed_at` jsou čas **posledního úspěšného** přepočtu příslušné cache, ne čas změny zdroje.
+- Při zařazení asynchronní invalidace nastav aplikace odpovídající `*_computed_at = NULL` ve stejné transakci, ve které změnu zdroje eviduje nebo enqueueuje. `NULL` znamená „nepočítáno nebo invalidováno“; cache řádky mohou do dokončení jobu obsahovat poslední konzistentní výsledek, ale nesmějí být prezentovány jako čerstvé.
+- `travel_requirements_computed_at` sleduje v1 pouze úspěšný ruční add/remove a segmentová/weather invalidace se ho netýká.
+- Teplotní, cenová, časová, věková a destination cache vlastní timestamp nemají. U synchronních změn proto nesmějí být stale vůbec; u asynchronní weather/climate invalidace je stav jobu a observabilita jediný freshness signál. Přidání samostatného `weather_computed_at` je případné budoucí rozšíření schématu.
+- Veřejný katalog při aktivním filtru nesmí použít cache označenou příslušným `computed_at = NULL`. U teploty, která vlastní timestamp nemá, je v1 povolená eventual consistency do dokončení monitorovaného jobu; neúspěšný job musí být opraven/retryován, ne tiše ignorován.
+- API/detail při `packing_computed_at` nebo `robotaxi_advisories_computed_at = NULL` nesmí staré řádky prezentovat jako aktuální: blok skryje nebo označí stavem „přepočítává se“. Konkrétní UI je volba frontendu, ale freshness stav musí být součástí odpovědi odvozené z timestampu.
 
 **Příklad agregace ceny a délky** (výlet „Praha víkend", `trips.home_currency = 'CZK'`):
 

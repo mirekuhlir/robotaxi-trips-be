@@ -187,7 +187,7 @@ Doporučení se **neukládá na `weather_records` ani `places`**. Počasí zůst
 | `segment_packing_item_sources` | segment × položka | Proč doporučeno na segmentu: `weather` a/nebo `segment` |
 | `trip_packing_items` | výlet | Agregovaný seznam s `priority` (union ze segmentů; u stejné položky nejvyšší priorita) |
 | `trip_packing_item_sources` | výlet × položka | Proč doporučeno: union zdrojů ze `segment_packing_item_sources` |
-| `trips.packing_computed_at` | výlet | Čas posledního přepočtu |
+| `trips.packing_computed_at` | výlet | Čas posledního úspěšného přepočtu; `NULL` = nepočítáno nebo invalidováno |
 
 **Příklad dotazu — doporučení pro detail výletu:**
 
@@ -240,11 +240,14 @@ Labely pro UI mapuje FE z i18n souborů podle `slug` a `users.locale` (fallback 
 
 #### Kdy invalidovat cache
 
-Přepočty probíhají v aplikační vrstvě (ne PostgreSQL triggerem).
+Přepočty probíhají v aplikační vrstvě (ne PostgreSQL triggerem) a používají trip-level zámek a freshness pravidla z [Concurrency a čerstvost cache](implementation-notes.md#concurrency-a-čerstvost-cache).
+Při asynchronní invalidaci nastav `trips.packing_computed_at = NULL` ve stejné transakci jako evidence/enqueue změny; timestamp se obnoví až po úspěšném jobu.
 
-- změna segmentů výletu → přepočet cache balení, cache robotaxi upozornění, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c`, `temperature_source`, `water_temp_min_c` / `water_temp_max_c`, `water_temperature_source` a ostatních agregací na `trips` (cestovní požadavky v1 jen ručně — ne při změně segmentů; zásuvky FE read-time)
+- INSERT / UPDATE / DELETE segmentu nebo libovolná změna `transit_details` → přepočet cache balení, cache robotaxi upozornění, `temp_min_c` / `temp_max_c`, `feels_like_min_c` / `feels_like_max_c`, `temperature_source`, `water_temp_min_c` / `water_temp_max_c`, `water_temperature_source` a ostatních agregací na `trips` (cestovní požadavky v1 jen ručně — ne při změně segmentů; zásuvky FE read-time)
 - změna `weather_records` pro oblasti dotčené výletem **nebo jejich rodiče v geo-řetězci** → přepočet cache balení, cache robotaxi upozornění, `temp_*` / `feels_like_*`, `temperature_source` a `water_temp_*` / `water_temperature_source`; aplikace musí najít dotčené výlety (segmenty s místy v dané oblasti nebo v potomcích, kteří na ni mohou spadnout × protínající lokální ISO týdny)
 - sync `weather_climate_months` pro oblast (nebo rodiče) → přepočet **jen** teplotní cache (`temp_*` / `feels_like_*` / `temperature_source` a `water_temp_*` / `water_temperature_source`) — balení klima nepoužívá (viz [Fallback na klima](weather-and-climate.md#fallback-na-klima))
+- změna `places.weather_region_id` nebo geo polí místa použitého jako `start_place_id` / `end_place_id` → najít dotčené výlety a přepočítat weather-dependent cache
+- změna aktivních `clothing_rules`, jejich priority/podmínek, junction tabulek nebo deaktivace `clothing_items` → najít dotčené výlety a přepočítat balení
 - chybějící `places.weather_region_id` u segmentů → weather-based pravidla se přeskočí; `temp_*` / `feels_like_*` cache může zůstat `NULL` → výlet mimo filtrovaný katalog dle teploty; `water_temp_*` stejně `NULL` bez vyřešitelné SST
 
 #### Co zůstává mimo DB

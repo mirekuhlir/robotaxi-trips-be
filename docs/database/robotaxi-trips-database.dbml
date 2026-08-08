@@ -23,6 +23,9 @@ Project robotaxitrips {
     Diagramový zdroj pro dbdiagram.io; SQL migrace se píšou ručně podle .md.
     CHECK, partial indexy, ON DELETE akce a exclusion constrainty jsou v DBML jen poznámkami.
     Unique indexy označené jako partial nesmí být z DBML generované jako běžné globální UNIQUE.
+    Cross-table workflow invarianty (segment_kind ↔ transit_details, robotaxi pole, min. 1 admin)
+    záměrně vynucuje aplikační vrstva v zamčené transakci; viz implementation-notes.md,
+    segments.md a users-and-trips.md.
   '''
 }
 
@@ -228,7 +231,7 @@ Table trips {
   total_cost_usd numeric(10,2) [not null, default: 0, note: 'Cache SUM(segments.price_usd) — kanon pro katalog']
   total_cost_home numeric(10,2) [not null, default: 0, note: 'Cache SUM(segments.home_price_amount) v home_currency']
   total_duration_minutes integer [not null, default: 0, note: 'Cache — bez accommodation; ne dojezd z místa']
-  destination_place_id uuid [ref: > places.id, note: 'Cache destinace výletu; ON DELETE SET NULL; párový s outbound_transport_mode']
+  destination_place_id uuid [ref: > places.id, note: 'Cache destinace výletu; ON DELETE SET NULL; párový s outbound_transport_mode — před DELETE místa aplikace připraví celý pár, jinak CHECK selže']
   outbound_transport_mode transport_mode [note: 'Cache režimu dojezdu z itineráře; CHECK párovost s destination_place_id']
   recommended_age_min smallint [note: 'Cache MAX z aktivit']
   recommended_age_max smallint [note: 'Cache MIN z aktivit']
@@ -243,9 +246,9 @@ Table trips {
   water_temperature_source temperature_source [note: 'Odkud je SST cache (weather_records / climate); NULL = žádná vyřešitelná voda']
   rating_avg numeric(2,1) [note: 'Cache AVG(trip_reviews.score); NULL při rating_count = 0; CHECK 1–5']
   rating_count integer [not null, default: 0, note: 'Cache COUNT(trip_reviews); CHECK >= 0; count 0 ⇔ avg NULL']
-  packing_computed_at timestamptz [note: 'Čas posledního přepočtu cache balení']
+  packing_computed_at timestamptz [note: 'Čas posledního úspěšného přepočtu cache balení; NULL = nepočítáno nebo invalidováno']
   travel_requirements_computed_at timestamptz [note: 'Čas poslední změny cache cestovních požadavků (v1 ruční add/remove)']
-  robotaxi_advisories_computed_at timestamptz [note: 'Čas posledního přepočtu cache robotaxi upozornění']
+  robotaxi_advisories_computed_at timestamptz [note: 'Čas posledního úspěšného přepočtu cache robotaxi upozornění; NULL = nepočítáno nebo invalidováno']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`, note: 'Auto-trigger']
 
@@ -280,7 +283,7 @@ Table trip_members {
     user_id [name: 'idx_trip_members_user_id']
   }
 
-  Note: 'Jediný zdroj pravdy pro oprávnění. Min. 1 admin per trip (aplikace).'
+  Note: 'Jediný zdroj pravdy pro oprávnění. Min. 1 admin per trip vynucuje aplikace: každá členská mutace zamkne parent trips řádek FOR UPDATE a validuje výsledný stav po zámku; přímé SQL invariant negarantuje.'
 }
 
 Table trip_reviews {
@@ -414,7 +417,7 @@ Table places {
   telephone varchar [note: 'Číslo bez předvolby; FE skládá +{phone_calling_code} {telephone}']
   accepted_payments place_accepted_payments [note: 'NULL = neznámé / nezadáno — UI nic nezobrazí; žádný CHECK ani index navíc']
   robotaxi_access place_robotaxi_access [note: 'NULL = neznámé; last-mile k POI — ne service area města']
-  robotaxi_access_place_id uuid [ref: > places.id, note: 'ON DELETE SET NULL; jen via_access_point; ≠ self; typicky robotaxi_pickup_zone / parking_lot']
+  robotaxi_access_place_id uuid [ref: > places.id, note: 'ON DELETE SET NULL; jen via_access_point; ≠ self; typicky robotaxi_pickup_zone / parking_lot; před DELETE access place přepoj/vynuluj celý last-mile stav, jinak CHECK selže']
   robotaxi_approach_walk_meters integer [note: 'CHECK IS NULL OR >= 0; u via_access_point > 0; u direct NULL nebo 0']
   rating numeric(2,1) [note: 'Externí Google Maps–style import; CHECK IS NULL OR (rating >= 1 AND rating <= 5); NE agregace z place_reviews']
   review_rating_avg numeric(2,1) [note: 'Cache AVG(place_reviews.score); NULL při review_rating_count = 0; CHECK 1–5']
@@ -916,7 +919,8 @@ Table segments {
     Lineární timeline [start_time, end_time) — bez překryvů včetně accommodation.
     Produkční SQL přidá exclusion constraint přes btree_gist; DBML ho neumí vyjádřit.
     Vícedenní ubytování modeluj jako check-in/check-out nebo noční úseky.
-    transit_details jen u segment_kind = transit.
+    transit_details právě 1 řádek u segment_kind = transit, žádný u ostatních;
+    cross-table invariant vynucuje aplikace atomickým zápisovým workflow.
   '''
 }
 
@@ -989,4 +993,6 @@ Table transit_details {
     pickup_zone_place_id [name: 'idx_transit_details_pickup_zone', note: 'SQL: partial WHERE pickup_zone_place_id IS NOT NULL']
     dropoff_zone_place_id [name: 'idx_transit_details_dropoff_zone', note: 'SQL: partial WHERE dropoff_zone_place_id IS NOT NULL']
   }
+
+  Note: 'Aplikační invariant: parent segment musí mít segment_kind = transit. Robotaxi vyžaduje aktivní provider_id; robotaxi-only pole jsou u ostatních transport_mode NULL; model musí patřit providerovi a kapacita musí stačit. distance_meters a booking_reference jsou povolené pro všechny transit režimy. Zápis probíhá atomicky se zámkem trips řádku a přepočtem cache — viz segments.md a implementation-notes.md.'
 }

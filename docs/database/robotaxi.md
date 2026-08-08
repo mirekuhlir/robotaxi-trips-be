@@ -187,7 +187,7 @@ Robotaxi upozornění (počasí × provoz) jsou **oddělená doména** od weathe
 |---|---|---|
 | `segment_robotaxi_advisories` | segment | Které `robotaxi_advisory_items` doporučit pro daný robotaxi segment + nejvyšší `priority` z matching pravidel |
 | `trip_robotaxi_advisories` | výlet | Agregovaný seznam s `priority` (union ze segmentů; u stejné položky nejvyšší priorita) |
-| `trips.robotaxi_advisories_computed_at` | výlet | Čas posledního přepočtu |
+| `trips.robotaxi_advisories_computed_at` | výlet | Čas posledního úspěšného přepočtu; `NULL` = nepočítáno nebo invalidováno |
 
 **Příklad dotazu — upozornění pro detail výletu:**
 
@@ -226,11 +226,14 @@ Labely pro UI mapuje FE z i18n souborů podle `slug`, `severity` a `users.locale
 
 #### Kdy invalidovat cache
 
-Přepočty probíhají v aplikační vrstvě (ne PostgreSQL triggerem).
+Přepočty probíhají v aplikační vrstvě (ne PostgreSQL triggerem) a používají stejný trip-level zámek jako zápis segmentu — viz [Concurrency a čerstvost cache](implementation-notes.md#concurrency-a-čerstvost-cache).
+Při asynchronní invalidaci nastav `trips.robotaxi_advisories_computed_at = NULL` ve stejné transakci jako evidence/enqueue změny; timestamp se obnoví až po úspěšném jobu.
 
-- změna segmentů výletu → přepočet spolu s ostatními agregacemi na `trips`
+- INSERT / UPDATE / DELETE segmentu nebo libovolná změna `transit_details` → přepočet spolu s ostatními agregacemi na `trips`; zejména změna `segment_kind` nebo `transport_mode` může segment přidat do/odebrat z robotaxi cache
 - změna `weather_records` pro oblasti dotčené výletem **nebo jejich rodiče v geo-řetězci** → přepočet cache robotaxi upozornění (lze počítat v jednom průchodu s cache balení a `temp_*`)
-- změna aktivních `robotaxi_advisory_rules` nebo junction tabulek → najít dotčené výlety a přepočítat
+- změna aktivních `robotaxi_advisory_rules`, jejich podmínek, priority nebo junction tabulek → najít dotčené výlety a přepočítat
+- deaktivace `robotaxi_advisory_items` → odstranit položku z dotčených cache přepočtem; katalogovou položku nemaž, dokud na ni cache odkazuje přes RESTRICT
+- změna `places.weather_region_id` nebo geo polí místa použitého robotaxi segmentem → najít dotčené výlety podle [Změna místa a invalidace výletů](places.md#změna-místa-a-invalidace-výletů)
 - chybějící `places.weather_region_id` u robotaxi segmentů → weather-based pravidla se přeskočí; cache může být prázdná
 
 #### Co zůstává mimo DB
@@ -254,6 +257,8 @@ Pro `places` s vyplněnými `country_code`, `subdivision_code` a `locality`:
 #### Validace při plánování (soft varování)
 
 Při uložení robotaxi segmentu aplikace pro `provider_id` a místa `start_place_id` / `end_place_id` (pokud mají geo pole) ověří existenci `provider_service_areas` se `status = 'public'`. Chybí pokrytí → **soft varování** autorovi (ne blokace zápisu): např. „Waymo v Karlštejně nejezdí — ověřte záložní dopravu.“
+
+Tvrdé validační minimum pro provider, model, zóny a kapacitu je kanonicky v [`transit_details` — pravidla](segments.md#transit_details--pravidla). Nový nebo měněný robotaxi úsek smí použít jen aktivního providera a aktivní model; deaktivace katalogové položky nemění historické itineráře.
 
 Doplňková kontrola (volitelně v aplikaci):
 - letiště na trase + `serves_airport = false` → varování
