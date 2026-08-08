@@ -150,7 +150,7 @@ CHECK (
 
 Neznámá / nezadaná platba = `accepted_payments IS NULL`. Žádný CHECK ani index navíc — hodnoty pokrývá typ `place_accepted_payments`.
 
-Last-mile robotaxi: `NULL` na `robotaxi_access` = neznámé (UI nic nezobrazí). Sémantika hodnot a FE chipy — viz [Last-mile robotaxi](places.md#places). Aplikace soft-validuje kategorii access place (`robotaxi_pickup_zone` nebo `parking_lot`).
+Last-mile robotaxi: `NULL` na `robotaxi_access` = neznámé (UI nic nezobrazí). Sémantika hodnot a FE chipy — viz [Last-mile robotaxi](places.md#places). CHECK výše blokuje přímý self-reference, ale neumí kontrolovat jiné řádky, takže A → B → A ani delší řetězce sám nezachytí. Maximální hloubku 1 tvrdě vynucuje aplikační validace níže; kategorii access place validuje soft.
 
 **`trip_reviews` / `place_reviews`:**
 
@@ -349,11 +349,14 @@ Tyto invarianty PostgreSQL CHECK neřeší — vynucuj je aplikace při zápisu:
 - agregace věku aktivit nesmí vést k `recommended_age_min > recommended_age_max` na `trips` — jinak poruší DB CHECK; aplikace detekuje konflikt při uložení segmentu před COMMIT
 - `places.weather_region_id` smí odkazovat jen na `weather_regions` ve stejné zemi (`places.country_code = weather_regions.country_code`, pokud je `places.country_code` vyplněné); při ručním přiřazení validuj i jemnější shodu podle typu regionu (`postal_code`, `locality`, `subdivision`), pokud jsou příslušná pole na místě známá
 - u `places` prázdné řetězce `name` / `description` / `website_url` / `address` / `phone_calling_code` / `telephone` normalizuj na `NULL`; `website_url` při vyplnění musí být HTTPS URL; `phone_calling_code` jen číslice bez vedoucího `+` (1–3 znaky); `telephone` bez předvolby — FE pro `tel:` odkaz spojí číslice z obou polí; externí `rating` (Google Maps–style) volitelné, při vyplnění `1.0`–`5.0` — **ne** přepisovat z `place_reviews`
+- u autorského textu normalizuj prázdné `segments.title`, `segments.description`, `segment_images.caption`, `trip_reviews.body`, `place_reviews.body`, `trip_review_media.caption` a `place_review_media.caption` na `NULL`
 - import míst probíhá jako upsert na `(external_source, external_place_id)`; import nesmí přepsat `review_rating_avg` / `review_rating_count`, ruční `weather_region_id` ani last-mile pole (`robotaxi_access`, `robotaxi_access_place_id`, `robotaxi_approach_walk_meters`) — viz [Import a deduplikace míst](places.md#import-a-deduplikace-míst)
 - cache `trips.destination_place_id` / `outbound_transport_mode` přepočítávej podle [Travel times](travel-times.md#cache-destinace-a-outbound-režimu-na-trips); částečný pár se neukládá (DB CHECK)
+- u `places.robotaxi_access = via_access_point` tvrdě vyžaduj maximální hloubku 1: cílové místo samo nesmí mít `robotaxi_access = via_access_point` a jeho `robotaxi_access_place_id` nesmí odkazovat zpět na zapisované místo; kontrolu proveď i při UPDATE access pointu, který už používají jiná místa
 - u `places.robotaxi_access = via_access_point` soft-validuj, že `robotaxi_access_place_id` odkazuje na místo s kategorií `robotaxi_pickup_zone` nebo `parking_lot`
-- pravidla zápisu a agregace uživatelských recenzí (`trip_reviews`, `place_reviews`, media) — viz [Recenze](users-and-trips.md#recenze)
+- pravidla zápisu a agregace uživatelských recenzí (`trip_reviews`, `place_reviews`, media) — viz [Recenze](users-and-trips.md#recenze); v1 nemá moderation status, validní recenze proto vstupuje do cache ihned
 - při ingestu `weather_records` ověř soft konzistenci mlhy a viditelnosti proti prahům z tabulky [`fog_condition`](weather-and-climate.md#fog_condition): `none` / `haze` ⇒ `visibility_avg_m >= 2000`, `mist` ⇒ `1000`–`2000`, `fog` ⇒ pod `1000`, `dense_fog` ⇒ pod `200`. Nesoulad **neblokuje** zápis (různá API měří jinak) — loguj varování a preferuj hodnotu z primárního zdroje
+- matching `provider_service_areas` je ve v1 exact match normalizovaných `(country_code, subdivision_code, locality)` a pouze orientační soft kontrola; nalezená shoda není geometrickou garancí obsluhy konkrétního pickup/dropoff bodu, chybějící geo pole kontrolu přeskočí
 - u `provider_service_areas` s `operates_24_7 = false` znamená `daily_end_local < daily_start_local` okno **přes půlnoc** (např. `06:00`–`02:00`); vyhodnocení provozní doby musí tento případ pokrýt. `daily_start_local = daily_end_local` je nejednoznačné — aplikace ho odmítne a vyžádá `operates_24_7 = true`
 - `clothing_rules` musí mít alespoň jednu aktivní podmínku (skalární sloupec, `non_accommodation_activity = true`, nebo ≥1 řádek v junction tabulce) — pravidlo bez podmínky je neplatné
 - `travel_requirement_rules` musí mít alespoň jednu aktivní podmínku (skalární sloupec NOT NULL) — pravidlo bez podmínky je neplatné

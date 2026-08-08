@@ -4,6 +4,8 @@
 
 Cross-cutting přehled agregací na úrovni výletu. Doménové poznámky jsou u příslušných souborů — viz [index níže](#doménové-poznámky).
 
+`created_at`, `updated_at` a neměnné `trips.created_by` jsou základní auditní metadata, ne historie kolaborativních změn. V1 neukládá trip revisions ani doménový audit log a recenze nemají moderation status; obě rozšíření jsou explicitní produktový backlog. Polygonové service-area geofence přes PostGIS jsou rovněž backlog v2 — v1 pracuje jen s orientační locality shodou.
+
 ### Agregace na úrovni `trips`
 
 Sloupce `total_cost_usd`, `total_cost_home`, `total_duration_minutes`, `destination_place_id`, `outbound_transport_mode`, `recommended_age_min`, `recommended_age_max`, `max_difficulty`, `temp_min_c`, `temp_max_c`, `feels_like_min_c`, `feels_like_max_c`, `temperature_source`, `water_temp_min_c`, `water_temp_max_c`, `water_temperature_source`, `rating_avg`, `rating_count`, `packing_computed_at`, `travel_requirements_computed_at`, `robotaxi_advisories_computed_at` a tabulky `trip_packing_items`, `trip_packing_item_sources`, `segment_packing_items`, `segment_packing_item_sources`, `trip_travel_requirements`, `trip_travel_requirement_sources`, `segment_robotaxi_advisories`, `trip_robotaxi_advisories` jsou denormalizované cache hodnoty. Agregace ze segmentů aktualizuj aplikační vrstvou při INSERT/UPDATE/DELETE na `segments` nebo `transit_details` v zamčené transakci; `rating_avg` / `rating_count` stejným trip zámkem při změně `trip_reviews`. Asynchronní zdroje používají invalidaci a job podle [Concurrency a čerstvost cache](#concurrency-a-čerstvost-cache):

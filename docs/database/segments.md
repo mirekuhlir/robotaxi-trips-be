@@ -40,12 +40,12 @@ Galerie obrázků segmentu — 0..N řádků na segment.
 | `id` | UUID, PK | |
 | `segment_id` | UUID, FK → segments | ON DELETE CASCADE |
 | `image_url` | TEXT, NOT NULL | Veřejná URL (CDN/R2/S3); stejný pattern jako `trips.cover_image_url` |
-| `caption` | TEXT, nullable | Volitelný popisek k danému obrázku v jazyce autora |
+| `caption` | TEXT, nullable | Volitelný popisek k danému obrázku v jazyce autora; prázdný řetězec normalizuj na `NULL` |
 | `sort_order` | SMALLINT, NOT NULL | Pořadí v galerii segmentu; výchozí `0`; `>= 0`; řazení `ORDER BY sort_order, id` |
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
 
-Validace v aplikaci: `image_url` musí být neprázdná HTTPS URL; max. počet obrázků per segment volitelně v aplikaci (např. 20), ne v DB.
+Validace v aplikaci: `image_url` musí být neprázdná HTTPS URL; prázdný `caption` normalizuj na `NULL`; max. počet obrázků per segment volitelně v aplikaci (např. 20), ne v DB.
 
 
 ### `transit_details` (1:1 k `segments`)
@@ -108,6 +108,8 @@ Kurátorovaná last-mile metadata na cílovém místě (viz [Places — last-mil
 
 `dropoff_zone_place_id` v `transit_details` zůstává volitelný uzel providera (kategorie `robotaxi_pickup_zone`); `robotaxi_access_place_id` na cílovém POI je kurátorovaný „konec silnice“ pro last-mile — můžou se shodovat, ale nejsou totéž.
 
+Access point je vždy koncový uzel: místo odkazované přes `robotaxi_access_place_id` samo nesmí používat `via_access_point` ani odkazovat zpět na cílové POI. Aplikace toto pravidlo tvrdě validuje při INSERT/UPDATE místa, aby last-mile šablona nikdy nemusela řetězit další access point.
+
 **Ubytování na více nocí:** nepoužívej jeden dlouhý `accommodation` segment přes celý pobyt, pokud by překrýval denní program. Pobyt rozděl na nepřekrývající se ubytovací úseky — typicky check-in blok, noční úseky a/nebo check-out blok podle toho, co má být v timeline vidět. Cena jedné rezervace se uloží jen jednou (např. na první ubytovací úsek) nebo se deterministicky rozdělí mezi úseky, aby `trips.total_cost_usd` a `trips.total_cost_home` nebyly nadhodnocené — split musí platit současně pro `local_price_amount`, `home_price_amount` a `price_usd`. Frontend může úseky vizuálně seskupit jako jeden hotelový pobyt; DB timeline zůstává striktně lineární. `difficulty` u ubytování je vždy `NULL`.
 
 Segmenty se modelují jako polootevřené intervaly `[start_time, end_time)`. Příklad timeline (ubytovací úsek končí v 10:00, chůze začíná v 10:00) je validní — dotyk na hranici není překryv.
@@ -122,7 +124,7 @@ Každý CREATE/UPDATE/DELETE segmentu a každá změna `transit_details` použí
 
 1. Zamknout rodičovský výlet: `SELECT id FROM trips WHERE id = :trip_id FOR UPDATE`.
 2. Načíst aktuální segment, případné `transit_details`, místa, provider a model potřebné pro validaci. `segments.trip_id` je po vytvoření neměnný; přesun mezi výlety se provádí jako DELETE + CREATE se zámky obou výletů získanými v deterministickém pořadí `trip_id`, ne UPDATE.
-3. Sestavit a validovat **cílový stav** podle matice výše, včetně časového překryvu a robotaxi pravidel níže. Validace nesmí spoléhat na hodnoty načtené před získáním zámku.
+3. Sestavit a validovat **cílový stav** podle matice výše, včetně časového překryvu a robotaxi pravidel níže. Service-area exact match je jen orientační soft kontrola, nikoli potvrzení geometrické dostupnosti pickup/dropoff bodu. Validace nesmí spoléhat na hodnoty načtené před získáním zámku.
 4. Zapsat `segments` a podle cílového `segment_kind` atomicky vložit/upravit nebo odstranit `transit_details`.
 5. Přepočítat všechny cache dotčeného výletu stejným postupem jako ostatní segmentové mutace.
 6. Commitnout až po úspěšné validaci a přepočtu. Jakákoli chyba vrací celou transakci zpět.

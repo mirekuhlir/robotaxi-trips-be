@@ -54,7 +54,7 @@ Katalog modelů vozidel per provider — kapacita, bezbariérovost, dětská sed
 
 ### `provider_service_areas`
 
-Servisní oblasti providerů (geofence na úrovni locality). Robotaxi jezdí jen ve vymezených zónách — samostatná doména od `weather_regions`.
+Servisní oblasti providerů jsou ve v1 administrativní a orientační katalog na úrovni locality. Nejde o geometrickou geofence a shoda sama nepotvrzuje, že provider obslouží konkrétní pickup/dropoff bod. Doména je oddělená od `weather_regions`.
 
 | Sloupec | Typ | Popis |
 |---|---|---|
@@ -77,7 +77,7 @@ Servisní oblasti providerů (geofence na úrovni locality). Robotaxi jezdí jen
 
 **Omezení:** `UNIQUE (provider_id, country_code, subdivision_code, locality)`.
 
-**Backlog v2:** polygon geofence přes PostGIS (`geom geography(POLYGON, 4326)`).
+**Backlog v2:** polygonová geofence přes PostGIS (`geom geography(POLYGON, 4326)`) pro skutečný point-in-polygon test pickup/dropoff bodů.
 
 ### `robotaxi_advisory_items`
 
@@ -243,7 +243,7 @@ Při asynchronní invalidaci nastav `trips.robotaxi_advisories_computed_at = NUL
 
 ### Servisní oblasti providerů
 
-`provider_service_areas` zachycuje, kde který provider robotaxi provozuje. Geografie je **administrativní** (ISO kódy na úrovni locality), nezávislá na `weather_regions`.
+`provider_service_areas` zachycuje orientační katalog měst, kde který provider robotaxi provozuje. Geografie je **administrativní** (ISO kódy na úrovni locality), nezávislá na `weather_regions`; výsledek není geometrickou garancí dostupnosti jízdy.
 
 **Service area ≠ last-mile k POI.** Pokrytí města říká, že provider v lokalitě jezdí. Kam až robotaxi doveze k konkrétnímu místu a kolik zbývá pěšky řeší kurátorovaná pole na `places` (`robotaxi_access`, `robotaxi_access_place_id`, `robotaxi_approach_walk_meters`) — viz [Last-mile robotaxi](places.md#places). Obě vrstvy se doplňují; last-mile nenahrazuje matching na `provider_service_areas`.
 
@@ -254,9 +254,11 @@ Pro `places` s vyplněnými `country_code`, `subdivision_code` a `locality`:
 1. Exact match: `(country_code, subdivision_code, locality)` → `provider_service_areas`.
 2. Chybí některé pole → matching přeskočit (soft varování nelze vyhodnotit).
 
+Jde o přesnou shodu normalizovaných administrativních hodnot, nikoli aliasů nebo geometrie. Import/admin musí pro stejnou lokalitu používat jednotný zápis; odlišný název či diakritika se ve v1 automaticky nesjednocují.
+
 #### Validace při plánování (soft varování)
 
-Při uložení robotaxi segmentu aplikace pro `provider_id` a místa `start_place_id` / `end_place_id` (pokud mají geo pole) ověří existenci `provider_service_areas` se `status = 'public'`. Chybí pokrytí → **soft varování** autorovi (ne blokace zápisu): např. „Waymo v Karlštejně nejezdí — ověřte záložní dopravu.“
+Při uložení robotaxi segmentu aplikace pro `provider_id` a místa `start_place_id` / `end_place_id` (pokud mají geo pole) ověří existenci `provider_service_areas` se `status = 'public'`. Chybí orientační pokrytí → **soft varování** autorovi (ne blokace zápisu): např. „Waymo nemá tuto lokalitu ve veřejném katalogu — ověřte dostupnost a záložní dopravu.“ Ani nalezená shoda nesmí být prezentována jako potvrzení obsluhy konkrétního místa.
 
 Tvrdé validační minimum pro provider, model, zóny a kapacitu je kanonicky v [`transit_details` — pravidla](segments.md#transit_details--pravidla). Nový nebo měněný robotaxi úsek smí použít jen aktivního providera a aktivní model; deaktivace katalogové položky nemění historické itineráře.
 
@@ -299,5 +301,5 @@ WHERE t.status = 'published'
   AND rp.slug = 'waymo';
 ```
 
-**Backlog v2:** polygon geofence přes PostGIS pro přesnější hranice servisních oblastí.
+**Backlog v2:** polygonová geofence přes PostGIS pro point-in-polygon ověření konkrétních pickup/dropoff bodů.
 

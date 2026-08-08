@@ -48,7 +48,7 @@ Pravidla zápisu a agregace uživatelských recenzí (trip i place) — viz [Rec
 | `phone_calling_code` | VARCHAR, nullable | Mezinárodní telefonní předvolba bez `+` (např. `420`, `1`, `43`) — **ne** ISO `country_code`; jen číslice, typicky 1–3 znaky |
 | `telephone` | VARCHAR, nullable | Národní / účastnické číslo bez předvolby (např. `222111222`); FE skládá zobrazení `+{phone_calling_code} {telephone}` |
 | `accepted_payments` | place_accepted_payments, nullable | Jak se na místě platí: `card` / `cash` / `card_and_cash`; `NULL` = neznámé / nezadáno — UI nic nezobrazí. Bez stavu „nebere nic“ (v1); bezplatné / předplacené místo nech `NULL` nebo doplň později. Žádná agregace na `trips`, žádný katalog / junction. |
-| `robotaxi_access` | place_robotaxi_access, nullable | Last-mile dostupnost robotaxi k tomuto POI: `direct` / `via_access_point` / `not_accessible`; `NULL` = neznámé / nezadáno — UI nic nezobrazí. Nezávislé na pokrytí města v `provider_service_areas` (viz [Servisní oblasti](robotaxi.md#servisní-oblasti-providerů)). Kurátorovaný údaj, ne agregace. |
+| `robotaxi_access` | place_robotaxi_access, nullable | Last-mile dostupnost robotaxi k tomuto POI: `direct` / `via_access_point` / `not_accessible`; `NULL` = neznámé / nezadáno — UI nic nezobrazí. Nezávislé na orientačním pokrytí města v `provider_service_areas`, které není geometrickou garancí obsluhy POI (viz [Servisní oblasti](robotaxi.md#servisní-oblasti-providerů)). Kurátorovaný údaj, ne agregace. |
 | `robotaxi_access_place_id` | UUID, FK → places, nullable | Doporučený konec jízdy robotaxi (konec silnice / dropoff / trailhead); ON DELETE SET NULL. Povinné jen u `robotaxi_access = via_access_point`; jinak `NULL`. Nesmí odkazovat na sebe. |
 | `robotaxi_approach_walk_meters` | INTEGER, nullable | Pěší vzdálenost v metrech od access pointu (nebo curb u `direct`) k cíli; `NULL` nebo `0` u `direct`; u `via_access_point` povinné a `> 0`. Bez cache minut — FE si může odvodit z metrů. |
 | `rating` | NUMERIC(2, 1), nullable | **Externí** hodnocení ve stylu Google Maps (`1.0`–`5.0`) z importu / adminu — **ne** agregace z `place_reviews`; `NULL` = neznámé |
@@ -99,7 +99,13 @@ Labely z FE i18n podle enum hodnoty + `users.locale`. Minuty chůze FE neuklád�
 | `via_access_point` | NOT NULL, `≠ places.id` | NOT NULL, `> 0` |
 | `not_accessible` | `NULL` | `NULL` |
 
-Aplikace soft-validuje, že access place má kategorii `robotaxi_pickup_zone` nebo `parking_lot` (stejný styl jako zóny v `transit_details`).
+Aplikace při zápisu `via_access_point` **tvrdě** validuje maximální hloubku 1:
+- cílové `robotaxi_access_place_id` samo nesmí mít `robotaxi_access = via_access_point`
+- cílové místo nesmí přes svůj `robotaxi_access_place_id` odkazovat zpět na aktuální místo
+
+Tím se odmítnou A → B → A i delší řetězce; více cílových POI smí sdílet jeden koncový access point. DB CHECK zachytí jen přímý self-reference (`A → A`), protože kontrola jiného řádku vyžaduje trigger. Přímý SQL zápis mimo aplikační službu proto tuto cross-row garanci ve v1 nemá; DB trigger je možné budoucí zesílení.
+
+Aplikace navíc soft-validuje, že access place má kategorii `robotaxi_pickup_zone` nebo `parking_lot` (stejný styl jako zóny v `transit_details`).
 
 FK `robotaxi_access_place_id` má `ON DELETE SET NULL`. Smazání access place při stále nastaveném `via_access_point` poruší CHECK — před smazáním přepoj nebo vynuluj last-mile na závislých místech (stejně jako RESTRICT u segmentů).
 
@@ -108,6 +114,8 @@ FK `robotaxi_access_place_id` má `ON DELETE SET NULL`. Smazání access place p
 ### `place_reviews`
 
 Uživatelská recenze místa — skóre, text a volitelná galerie médií. Jeden aktivní hlas na uživatele a místo. Agregace do `places.review_rating_avg` / `places.review_rating_count` (viz [Recenze](users-and-trips.md#recenze)). Oddělené od externího `places.rating` (Google Maps–style import).
+
+V1 nemá moderation status ani schvalovací frontu: validní recenze je po zápisu aktivní a vstupuje do agregace. Moderace, reportování a pravidla pro vyřazení skryté recenze z ratingu jsou produktový backlog.
 
 | Sloupec | Typ | Popis |
 |---|---|---|

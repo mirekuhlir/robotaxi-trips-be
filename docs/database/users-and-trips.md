@@ -58,6 +58,8 @@
 | `created_at` | TIMESTAMPTZ | Výchozí `now()` |
 | `updated_at` | TIMESTAMPTZ | Výchozí `now()`; Auto-trigger |
 
+`created_by`, `created_at` a `updated_at` poskytují původ a poslední čas změny, ale nejsou historií kolaborativních editací: neříkají, který člen změnil konkrétní segment nebo hodnotu. V1 nemá trip revisions ani doménový audit log. Jejich budoucí podoba (verze snapshotů, změnové události nebo audit entries) zůstává produktovým rozhodnutím.
+
 ### `trip_members`
 
 | Sloupec | Typ | Popis |
@@ -262,6 +264,8 @@ Před `cascadeOk` musí aplikace také smazat (nebo jinak vyřešit) `trip_revie
 ### Recenze
 
 Uživatelské recenze jsou UGC obsah připojený k výletu nebo místu: skóre, text a volitelná galerie obrázků/videí. Nejsou polymorfní — paralelní tabulky `trip_reviews` / `place_reviews` (+ `*_review_media`) se stejným tvarem.
+
+V1 nemá moderation status, reporty ani schvalovací frontu. Validní recenze je po zápisu ihned aktivní a vstupuje do ratingové cache; odstranění recenze znamená hard delete a přepočet agregace. Moderace a pravidla, zda skryté recenze zůstávají v agregaci, jsou explicitní produktový backlog.
 
 #### Co hodnotí co
 
